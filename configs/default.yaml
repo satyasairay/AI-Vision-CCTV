@@ -28,6 +28,10 @@ tracking:
 recognition:
   anpr_ocr_engine: "easyocr"
   eye_model_path: "models/eye_recognition.pt"
+  # A simple mapping from identity names to feature vectors for eye recognition.
+  # The demo does not include sample data; populate this dictionary with numpy
+  # arrays when enrolling new identities.
+  eye_database: {}
 
 storage:
   log_dir: "logs"
@@ -40,3 +44,6 @@ routing_rules:
   # Example rule: trigger when a license plate is on the watchlist
   - type: "license_plate_watchlist"
     watchlist: ["ABC123", "XYZ987"]
+  # Example rule: trigger when a person's identity is on the watchlist.
+  - type: "person_identity_watchlist"
+    watchlist: ["John Doe", "Jane Smith"]

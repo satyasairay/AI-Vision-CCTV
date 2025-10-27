@@ -13,6 +13,8 @@ The system is designed to be **fully local** with no external cloud dependencies
 
 For this demo environment, the vehicle detection and tracking components are intentionally lightweight. We use OpenCV's background‑subtraction to detect moving objects and a simple centroid‑based tracker to assign IDs. This avoids the need to download large neural network weights and allows the pipeline to run entirely offline. Advanced models can be plugged in later by adjusting the configuration and replacing the detector/tracker classes.
 
+Person detection in the demo uses OpenCV's built‑in HOG‑based pedestrian detector. It does not classify mask usage but lays the groundwork for future integration of mask/no‑mask classifiers. A placeholder **eye recognition** module provides an API for identifying individuals from periocular regions; this module compares simple feature vectors against a local database and can be extended with more sophisticated embeddings.
+
 ## Repository Layout
 
 The code is organized into modular packages:

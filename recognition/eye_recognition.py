@@ -48,5 +48,35 @@ class EyeRecognition:
         confidence : float
             Confidence score of the match (0–1). Returns 0.0 for now.
         """
-        # Placeholder implementation – compute feature vector and compare to database.
-        return "", 0.0
+        # If no database is provided, cannot identify
+        if not self.database:
+            return "", 0.0
+        # Extract a simple feature vector from the eye region
+        try:
+            import cv2
+
+            # Convert to grayscale and resize to a fixed size
+            gray = cv2.cvtColor(eye_image, cv2.COLOR_BGR2GRAY)
+            resized = cv2.resize(gray, (64, 64))
+            feature = resized.flatten().astype("float32")
+            # Normalize the feature vector
+            norm = np.linalg.norm(feature)
+            feature = feature / norm if norm > 0 else feature
+        except Exception:
+            return "", 0.0
+
+        # Compare to each entry in the database
+        best_identity = ""
+        best_score = 0.0
+        for identity, db_feature in self.database.items():
+            # Ensure database feature is normalized
+            db_feature_norm = db_feature / (np.linalg.norm(db_feature) or 1.0)
+            # Compute cosine similarity (dot product) between features
+            score = float(np.dot(feature, db_feature_norm))
+            if score > best_score:
+                best_identity = identity
+                best_score = score
+        # Threshold can be adjusted based on desired strictness; if below 0.5, return unknown
+        if best_score < 0.5:
+            return "", 0.0
+        return best_identity, best_score

@@ -61,7 +61,9 @@ def main() -> None:
 
     recognition_cfg = config.get("recognition", {})
     anpr = ANPR(recognition_cfg.get("anpr_ocr_engine"))
-    eye_recognition = EyeRecognition(recognition_cfg.get("eye_model_path"))
+    # Pass optional eye database to the recognizer; if none provided, the recognizer will act as a stub
+    eye_database = recognition_cfg.get("eye_database")
+    eye_recognition = EyeRecognition(recognition_cfg.get("eye_model_path"), database=eye_database)
 
     storage_cfg = config.get("storage", {})
     logger = EventLogger(storage_cfg.get("log_dir", "logs"))
@@ -79,6 +81,19 @@ def main() -> None:
         return plate in watchlist
 
     rule_engine.register_handler("license_plate_watchlist", license_plate_watchlist)
+
+    # Custom rule handler for person identity watchlist. It expects the
+    # context to include a `person_identity` string and a `person_watchlist`
+    # list of identity names. Only triggers if identity is non-empty and
+    # present in the watchlist.
+    def person_identity_watchlist(context: dict) -> bool:
+        identity = context.get("person_identity")
+        if not identity:
+            return False
+        watchlist: list[str] = context.get("person_watchlist", [])
+        return identity in watchlist
+
+    rule_engine.register_handler("person_identity_watchlist", person_identity_watchlist)
 
     # Open camera
     camera.open()
@@ -119,6 +134,35 @@ def main() -> None:
                 for event in events:
                     # Log the event with the cropped plate image
                     logger.log(event, image=plate_img)
+
+            # Person detection (optional)
+            person_detections = person_detector.detect(frame)
+            for (px1, py1, px2, py2, label, score) in person_detections:
+                # Crop the person bounding box
+                px1 = max(0, px1)
+                py1 = max(0, py1)
+                px2 = min(frame.shape[1], px2)
+                py2 = min(frame.shape[0], py2)
+                person_img = frame[py1:py2, px1:px2]
+                # Extract eye region (top portion of the bounding box)
+                eye_region = person_img[0: max(1, (py2 - py1) // 3), :]
+                person_id, person_conf = eye_recognition.identify(eye_region)
+                # Flatten person watchlist from config
+                person_watchlist: list[str] = []
+                for rule in rules_cfg:
+                    if rule.get("type") == "person_identity_watchlist":
+                        wl = rule.get("watchlist", [])
+                        if isinstance(wl, list):
+                            person_watchlist.extend(wl)
+                context_p = {
+                    "person_identity": person_id,
+                    "person_identity_confidence": person_conf,
+                    "person_watchlist": person_watchlist,
+                }
+                events_p = rule_engine.evaluate(context_p)
+                for event in events_p:
+                    # Log the event with the cropped person eye image
+                    logger.log(event, image=eye_region)
 
             # Optional: display frame for visual confirmation (press q to quit)
             cv2.imshow("Frame", frame)
