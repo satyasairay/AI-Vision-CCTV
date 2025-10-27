@@ -107,26 +107,58 @@ def main() -> None:
     events = load_events(log_dir)
 
     # Sidebar: watchlist management
-    st.sidebar.header("Watchlist")
-    # Extract current watchlist from the first matching rule
-    watchlist: List[str] = []
+    st.sidebar.header("License Plate Watchlist")
+    # Extract current license plate watchlist
+    plate_watchlist: List[str] = []
+    person_watchlist: List[str] = []
     rules = config.get("routing_rules", [])
     for rule in rules:
         if rule.get("type") == "license_plate_watchlist":
             wl = rule.get("watchlist", [])
             if isinstance(wl, list):
-                watchlist = wl
-            break
-    st.sidebar.write(watchlist or "No plates in watchlist.")
+                plate_watchlist = wl
+        elif rule.get("type") == "person_identity_watchlist":
+            wl = rule.get("watchlist", [])
+            if isinstance(wl, list):
+                person_watchlist = wl
+    st.sidebar.write(plate_watchlist or "No plates in watchlist.")
     new_plate = st.sidebar.text_input("Add plate to watchlist")
-    if st.sidebar.button("Add"):
+    if st.sidebar.button("Add Plate"):
         if new_plate:
             # Update YAML config with new plate
             config_path = Path(__file__).resolve().parents[1] / "configs" / "default.yaml"
             update_watchlist(new_plate.strip(), config_path)
-            st.sidebar.success(f"Added {new_plate} to watchlist. Restart the pipeline to apply.")
+            st.sidebar.success(f"Added {new_plate} to plate watchlist. Restart the pipeline to apply.")
         else:
             st.sidebar.warning("Please enter a plate number.")
+    # Person watchlist section
+    st.sidebar.header("Person Identity Watchlist")
+    st.sidebar.write(person_watchlist or "No identities in watchlist.")
+    new_identity = st.sidebar.text_input("Add identity to watchlist")
+    if st.sidebar.button("Add Identity"):
+        if new_identity:
+            # Append identity to person watchlist in the config
+            config_path = Path(__file__).resolve().parents[1] / "configs" / "default.yaml"
+            # Load config and append identity
+            with open(config_path, "r") as f:
+                current_config = yaml.safe_load(f)
+            updated = False
+            for rule in current_config.get("routing_rules", []):
+                if rule.get("type") == "person_identity_watchlist":
+                    wl = rule.get("watchlist", [])
+                    if isinstance(wl, list) and new_identity not in wl:
+                        wl.append(new_identity)
+                        rule["watchlist"] = wl
+                        updated = True
+                        break
+            if updated:
+                with open(config_path, "w") as f:
+                    yaml.safe_dump(current_config, f)
+                st.sidebar.success(f"Added {new_identity} to person watchlist. Restart the pipeline to apply.")
+            else:
+                st.sidebar.warning("Could not update person watchlist.")
+        else:
+            st.sidebar.warning("Please enter an identity name.")
 
     # Main area: Live feed placeholder
     st.header("Live Feed")
