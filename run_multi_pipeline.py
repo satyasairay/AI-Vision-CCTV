@@ -32,6 +32,8 @@ from .tracking import DeepSortTracker
 from .recognition import ANPR, EyeRecognition
 from .rules import RuleEngine
 from .storage import EventLogger
+from .analytics.speed_estimator import SpeedEstimator
+from .analytics.dwell_time import DwellTimeMonitor
 
 
 def load_config(config_path: str) -> dict:
@@ -56,6 +58,25 @@ class CameraPipeline(threading.Thread):
         self.logger = logger
         self.rules_cfg = rules_cfg
         self.stop_event = threading.Event()
+
+        # Analytics configuration per camera
+        analytics_cfg = global_cfg.get("analytics", {})
+        # Speed estimation
+        speed_cfg = analytics_cfg.get("speed", {})
+        self.speed_enabled = speed_cfg.get("enable", False)
+        self.speed_limit = speed_cfg.get("speed_limit", 10.0)
+        self.speed_estimator: SpeedEstimator | None = None
+        if self.speed_enabled:
+            ppm = speed_cfg.get("pixels_per_meter", 1.0)
+            self.speed_estimator = SpeedEstimator(pixels_per_meter=ppm)
+        # Dwell time monitoring
+        dwell_cfg = analytics_cfg.get("dwell_time", {})
+        self.dwell_enabled = dwell_cfg.get("enable", False)
+        self.dwell_monitor: DwellTimeMonitor | None = None
+        if self.dwell_enabled:
+            zone = dwell_cfg.get("zone", [0, 0, 0, 0])
+            threshold = dwell_cfg.get("threshold", 10.0)
+            self.dwell_monitor = DwellTimeMonitor(tuple(zone), threshold)
 
     def run(self) -> None:
         # Initialize camera
@@ -94,6 +115,18 @@ class CameraPipeline(threading.Thread):
         rule_engine.register_handler("license_plate_watchlist", license_plate_watchlist)
         rule_engine.register_handler("person_identity_watchlist", person_identity_watchlist)
 
+        # Register analytics rule handlers
+        if self.speed_enabled and self.speed_estimator is not None:
+            def over_speed_handler(context: dict) -> bool:
+                spd = context.get("speed")
+                return spd is not None and spd > self.speed_limit
+            rule_engine.register_handler("over_speed", over_speed_handler)
+
+        if self.dwell_enabled and self.dwell_monitor is not None:
+            def loitering_handler(context: dict) -> bool:
+                return context.get("dwell_time") is not None
+            rule_engine.register_handler("loitering", loitering_handler)
+
         # Save the last processed frame to disk for dashboard streaming
         output_dir = Path(self.global_cfg.get("storage", {}).get("log_dir", "logs"))
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -130,6 +163,30 @@ class CameraPipeline(threading.Thread):
                 events = rule_engine.evaluate(context)
                 for event in events:
                     self.logger.log(event, image=plate_img)
+
+                # Speed estimation
+                if self.speed_enabled and self.speed_estimator is not None:
+                    import time
+                    now = time.time()
+                    speed = self.speed_estimator.update(t_id, (x1, y1, x2, y2), now)
+                    if speed is not None:
+                        ctx_speed = {"track_id": t_id, "speed": speed}
+                        events_speed = rule_engine.evaluate(ctx_speed)
+                        for event in events_speed:
+                            self.logger.log(event)
+
+                # Dwell time monitoring
+                if self.dwell_enabled and self.dwell_monitor is not None:
+                    import time
+                    now = time.time()
+                    cx = (x1 + x2) / 2.0
+                    cy = (y1 + y2) / 2.0
+                    dwell_time = self.dwell_monitor.update(t_id, (cx, cy), now)
+                    if dwell_time is not None:
+                        ctx_dwell = {"track_id": t_id, "dwell_time": dwell_time}
+                        events_dwell = rule_engine.evaluate(ctx_dwell)
+                        for event in events_dwell:
+                            self.logger.log(event)
 
             # Person detection and recognition
             person_detections = person_detector.detect(frame)

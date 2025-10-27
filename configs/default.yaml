@@ -43,6 +43,22 @@ dashboard:
   host: "0.0.0.0"
   port: 8501
 
+analytics:
+  # Speed estimation settings
+  speed:
+    enable: false
+    # Conversion factor from pixels to meters (calibrate per camera)
+    pixels_per_meter: 5.0
+    # Speed limit in meters per second (e.g., 10 m/s ≈ 36 km/h)
+    speed_limit: 10.0
+  # Dwell time (loitering) settings
+  dwell_time:
+    enable: false
+    # Zone coordinates [x1, y1, x2, y2] where dwell time is monitored
+    zone: [0, 0, 0, 0]
+    # Threshold in seconds after which a loitering event is triggered
+    threshold: 10.0
+
 routing_rules:
   # Example rule: trigger when a license plate is on the watchlist
   - type: "license_plate_watchlist"

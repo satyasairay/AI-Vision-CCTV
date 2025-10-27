@@ -26,6 +26,8 @@ from .tracking import DeepSortTracker
 from .recognition import ANPR, EyeRecognition
 from .rules import RuleEngine
 from .storage import EventLogger
+from .analytics.speed_estimator import SpeedEstimator
+from .analytics.dwell_time import DwellTimeMonitor
 
 
 def load_config(config_path: str) -> dict:
@@ -101,6 +103,37 @@ def main() -> None:
 
     rule_engine.register_handler("person_identity_watchlist", person_identity_watchlist)
 
+    # Analytics: speed estimation and dwell time
+    analytics_cfg = config.get("analytics", {})
+    speed_cfg = analytics_cfg.get("speed", {})
+    speed_enabled = speed_cfg.get("enable", False)
+    speed_estimator: SpeedEstimator | None = None
+    if speed_enabled:
+        ppm = speed_cfg.get("pixels_per_meter", 1.0)
+        speed_estimator = SpeedEstimator(pixels_per_meter=ppm)
+        speed_limit = speed_cfg.get("speed_limit", 10.0)
+
+        # Handler for over-speed rule
+        def over_speed_handler(context: dict) -> bool:
+            spd = context.get("speed")
+            return spd is not None and spd > speed_limit
+
+        rule_engine.register_handler("over_speed", over_speed_handler)
+
+    dwell_cfg = analytics_cfg.get("dwell_time", {})
+    dwell_enabled = dwell_cfg.get("enable", False)
+    dwell_monitor: DwellTimeMonitor | None = None
+    if dwell_enabled:
+        zone = dwell_cfg.get("zone", [0, 0, 0, 0])
+        threshold = dwell_cfg.get("threshold", 10.0)
+        dwell_monitor = DwellTimeMonitor(tuple(zone), threshold)
+
+        def loitering_handler(context: dict) -> bool:
+            # Trigger if dwell_time is provided
+            return context.get("dwell_time") is not None
+
+        rule_engine.register_handler("loitering", loitering_handler)
+
     # Open camera
     camera.open()
     try:
@@ -141,6 +174,37 @@ def main() -> None:
                     # Log the event with the cropped plate image
                     logger.log(event, image=plate_img)
 
+                # Speed estimation for each tracked vehicle if enabled
+                if speed_enabled and speed_estimator is not None:
+                    import time
+                    now = time.time()
+                    speed = speed_estimator.update(track_id, (x1, y1, x2, y2), now)
+                    if speed is not None:
+                        ctx_speed = {
+                            "track_id": track_id,
+                            "speed": speed,
+                        }
+                        events_speed = rule_engine.evaluate(ctx_speed)
+                        for event in events_speed:
+                            logger.log(event)
+
+                # Dwell time monitoring for vehicles if enabled
+                if dwell_enabled and dwell_monitor is not None:
+                    import time
+                    now = time.time()
+                    # compute centroid of vehicle bbox
+                    cx = (x1 + x2) / 2.0
+                    cy = (y1 + y2) / 2.0
+                    dwell_time = dwell_monitor.update(track_id, (cx, cy), now)
+                    if dwell_time is not None:
+                        ctx_dwell = {
+                            "track_id": track_id,
+                            "dwell_time": dwell_time,
+                        }
+                        events_dwell = rule_engine.evaluate(ctx_dwell)
+                        for event in events_dwell:
+                            logger.log(event)
+
             # Person detection (optional)
             person_detections = person_detector.detect(frame)
             for (px1, py1, px2, py2, label, score) in person_detections:
@@ -169,6 +233,8 @@ def main() -> None:
                 for event in events_p:
                     # Log the event with the cropped person eye image
                     logger.log(event, image=eye_region)
+
+                # Dwell time monitoring for vehicles is handled in the vehicle loop
 
             # Optional: display frame for visual confirmation (press q to quit)
             cv2.imshow("Frame", frame)
