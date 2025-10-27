@@ -54,7 +54,10 @@ def main() -> None:
     person_detector = PersonDetector(detection_cfg.get("person_model_path"), detection_cfg.get("device", "cpu"))
 
     tracking_cfg = config.get("tracking", {})
-    tracker = DeepSortTracker(tracking_cfg.get("max_age", 30), tracking_cfg.get("iou_threshold", 0.3))
+    # distance_threshold controls how close detections must be to associate with an existing track
+    max_age = tracking_cfg.get("max_age", 30)
+    distance_threshold = tracking_cfg.get("distance_threshold", 50.0)
+    tracker = DeepSortTracker(max_age, distance_threshold)
 
     recognition_cfg = config.get("recognition", {})
     anpr = ANPR(recognition_cfg.get("anpr_ocr_engine"))

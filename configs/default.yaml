@@ -22,7 +22,8 @@ detection:
 
 tracking:
   max_age: 30
-  iou_threshold: 0.3
+  # Maximum Euclidean distance between centroids to associate detections
+  distance_threshold: 50.0
 
 recognition:
   anpr_ocr_engine: "easyocr"

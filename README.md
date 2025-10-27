@@ -4,7 +4,7 @@
 
 This project implements a **modular road‑security platform** designed to run entirely on local infrastructure. It integrates CCTV video streams for the following tasks:
 
-* **Moving‑vehicle detection & tracking** – detect vehicles in each frame and assign consistent IDs across frames.
+* **Moving‑vehicle detection & tracking** – detect moving objects in each frame using a lightweight background‑subtraction approach and assign consistent IDs across frames using a simple centroid‑based tracker. This avoids heavy model downloads and runs entirely locally.
 * **License‑plate recognition (ANPR)** – extract and recognize license plates from detected vehicles.
 * **Masked‑person & periocular/eye recognition** – detect people, classify mask usage, and identify individuals using only the eye region when masks are present.
 * **Event logging & dashboard visualization** – log detection events with metadata and display them through a local dashboard.
