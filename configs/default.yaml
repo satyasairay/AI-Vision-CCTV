@@ -19,6 +19,9 @@ detection:
   vehicle_model_path: "models/vehicle_detector.pt"
   person_model_path: "models/person_detector.pt"
   device: "cpu"
+  # Optional mask/no-mask classifier weights for person detection. If provided,
+  # the person detector will classify mask usage using this model.
+  mask_model_path: "models/mask_classifier.pt"
 
 tracking:
   max_age: 30

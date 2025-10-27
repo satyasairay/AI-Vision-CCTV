@@ -51,7 +51,13 @@ def main() -> None:
     camera = create_camera(config)
     detection_cfg = config.get("detection", {})
     vehicle_detector = VehicleDetector(detection_cfg.get("vehicle_model_path"), detection_cfg.get("device", "cpu"))
-    person_detector = PersonDetector(detection_cfg.get("person_model_path"), detection_cfg.get("device", "cpu"))
+    # Person detector can optionally use a mask classifier model to distinguish
+    # masked vs. unmasked faces. The path is read from the detection config.
+    person_detector = PersonDetector(
+        detection_cfg.get("person_model_path"),
+        detection_cfg.get("device", "cpu"),
+        mask_model_path=detection_cfg.get("mask_model_path"),
+    )
 
     tracking_cfg = config.get("tracking", {})
     # distance_threshold controls how close detections must be to associate with an existing track
