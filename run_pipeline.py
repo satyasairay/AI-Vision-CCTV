@@ -69,12 +69,13 @@ def main() -> None:
     rules_cfg = config.get("routing_rules", [])
     rule_engine = RuleEngine(rules_cfg)
 
-    # Sample custom rule handler for watchlist plates
-    def license_plate_watchlist(context):
+    # Custom rule handler for watchlist plates. It expects the context to
+    # include a `license_plate` string and a `watchlist` list of strings.
+    def license_plate_watchlist(context: dict) -> bool:
         plate = context.get("license_plate")
         if not plate:
             return False
-        watchlist = context.get("watchlist", [])
+        watchlist: list[str] = context.get("watchlist", [])
         return plate in watchlist
 
     rule_engine.register_handler("license_plate_watchlist", license_plate_watchlist)
@@ -94,16 +95,29 @@ def main() -> None:
             # For each tracked vehicle, perform ANPR
             for obj in tracked_objects:
                 track_id, x1, y1, x2, y2 = obj
+                # Ensure bounding box indices are within frame bounds
+                x1 = max(0, x1)
+                y1 = max(0, y1)
+                x2 = min(frame.shape[1], x2)
+                y2 = min(frame.shape[0], y2)
                 plate_img = frame[y1:y2, x1:x2]
                 plate_text, plate_conf = anpr.recognize(plate_img)
+                # Extract the watchlist from config for the current rule
+                watchlist: list[str] = []
+                for rule in rules_cfg:
+                    if rule.get("type") == "license_plate_watchlist":
+                        wl = rule.get("watchlist", [])
+                        if isinstance(wl, list):
+                            watchlist.extend(wl)
                 context = {
                     "track_id": track_id,
                     "license_plate": plate_text,
-                    "confidence": plate_conf,
-                    "watchlist": [rule.get("watchlist") for rule in rules_cfg if rule.get("type") == "license_plate_watchlist"],
+                    "license_plate_confidence": plate_conf,
+                    "watchlist": watchlist,
                 }
                 events = rule_engine.evaluate(context)
                 for event in events:
+                    # Log the event with the cropped plate image
                     logger.log(event, image=plate_img)
 
             # Optional: display frame for visual confirmation (press q to quit)
