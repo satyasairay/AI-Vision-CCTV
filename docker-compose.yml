@@ -1,0 +1,12 @@
+version: "3.9"
+services:
+  road_security:
+    build: .
+    container_name: road_security
+    volumes:
+      - .:/app
+    ports:
+      - "8501:8501"  # Streamlit dashboard
+    command: ["bash", "-c", "source /opt/venv/bin/activate && streamlit run dashboard/app.py --server.port=8501 --server.headless=true"]
+    environment:
+      - PYTHONUNBUFFERED=1

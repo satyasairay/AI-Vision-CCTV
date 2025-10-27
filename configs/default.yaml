@@ -1,0 +1,41 @@
+"""
+Default configuration for the road security platform.
+
+Modify values to match your environment and camera settings. You can
+override these settings by providing your own configuration file when
+running the pipeline.
+"""
+
+camera:
+  # URL of the RTSP stream or path to a local video file
+  source: "sample_data/sample_video.mp4"
+  # Desired frame width and height for processing (set to null to use original)
+  frame_width: null
+  frame_height: null
+  # Frames per second target (can be used to skip frames for performance)
+  target_fps: 15
+
+detection:
+  vehicle_model_path: "models/vehicle_detector.pt"
+  person_model_path: "models/person_detector.pt"
+  device: "cpu"
+
+tracking:
+  max_age: 30
+  iou_threshold: 0.3
+
+recognition:
+  anpr_ocr_engine: "easyocr"
+  eye_model_path: "models/eye_recognition.pt"
+
+storage:
+  log_dir: "logs"
+
+dashboard:
+  host: "0.0.0.0"
+  port: 8501
+
+routing_rules:
+  # Example rule: trigger when a license plate is on the watchlist
+  - type: "license_plate_watchlist"
+    watchlist: ["ABC123", "XYZ987"]

@@ -1,0 +1,116 @@
+"""Entry point for running the road security pipeline.
+
+This script stitches together the components from the various packages to
+process a video stream, perform detection/tracking/recognition, evaluate
+rules, log events, and optionally display results. It reads configuration
+parameters from a YAML file.
+
+Usage
+-----
+```bash
+python -m road_security.run_pipeline --config configs/default.yaml
+```
+"""
+
+from __future__ import annotations
+
+import argparse
+import yaml
+from pathlib import Path
+
+import cv2
+
+from .camera_adapters import RTSPCamera, LocalFileCamera
+from .detection import VehicleDetector, PersonDetector
+from .tracking import DeepSortTracker
+from .recognition import ANPR, EyeRecognition
+from .rules import RuleEngine
+from .storage import EventLogger
+
+
+def load_config(config_path: str) -> dict:
+    with open(config_path, "r") as f:
+        return yaml.safe_load(f)
+
+
+def create_camera(config: dict):
+    source = config["camera"]["source"]
+    if source.startswith("rtsp://"):
+        return RTSPCamera(source)
+    return LocalFileCamera(source)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Run the road security pipeline.")
+    parser.add_argument("--config", type=str, required=True, help="Path to configuration file.")
+    args = parser.parse_args()
+
+    config = load_config(args.config)
+
+    # Initialize components from configuration
+    camera = create_camera(config)
+    detection_cfg = config.get("detection", {})
+    vehicle_detector = VehicleDetector(detection_cfg.get("vehicle_model_path"), detection_cfg.get("device", "cpu"))
+    person_detector = PersonDetector(detection_cfg.get("person_model_path"), detection_cfg.get("device", "cpu"))
+
+    tracking_cfg = config.get("tracking", {})
+    tracker = DeepSortTracker(tracking_cfg.get("max_age", 30), tracking_cfg.get("iou_threshold", 0.3))
+
+    recognition_cfg = config.get("recognition", {})
+    anpr = ANPR(recognition_cfg.get("anpr_ocr_engine"))
+    eye_recognition = EyeRecognition(recognition_cfg.get("eye_model_path"))
+
+    storage_cfg = config.get("storage", {})
+    logger = EventLogger(storage_cfg.get("log_dir", "logs"))
+
+    rules_cfg = config.get("routing_rules", [])
+    rule_engine = RuleEngine(rules_cfg)
+
+    # Sample custom rule handler for watchlist plates
+    def license_plate_watchlist(context):
+        plate = context.get("license_plate")
+        if not plate:
+            return False
+        watchlist = context.get("watchlist", [])
+        return plate in watchlist
+
+    rule_engine.register_handler("license_plate_watchlist", license_plate_watchlist)
+
+    # Open camera
+    camera.open()
+    try:
+        while True:
+            ret, frame = camera.read()
+            if not ret:
+                break
+
+            # Vehicle detection
+            vehicle_detections = vehicle_detector.detect(frame)
+            tracked_objects = tracker.update([(x1, y1, x2, y2, score) for (x1, y1, x2, y2, score) in vehicle_detections])
+
+            # For each tracked vehicle, perform ANPR
+            for obj in tracked_objects:
+                track_id, x1, y1, x2, y2 = obj
+                plate_img = frame[y1:y2, x1:x2]
+                plate_text, plate_conf = anpr.recognize(plate_img)
+                context = {
+                    "track_id": track_id,
+                    "license_plate": plate_text,
+                    "confidence": plate_conf,
+                    "watchlist": [rule.get("watchlist") for rule in rules_cfg if rule.get("type") == "license_plate_watchlist"],
+                }
+                events = rule_engine.evaluate(context)
+                for event in events:
+                    logger.log(event, image=plate_img)
+
+            # Optional: display frame for visual confirmation (press q to quit)
+            cv2.imshow("Frame", frame)
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+    finally:
+        camera.release()
+        cv2.destroyAllWindows()
+
+
+if __name__ == "__main__":
+    main()

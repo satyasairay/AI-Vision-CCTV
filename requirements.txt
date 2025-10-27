@@ -1,0 +1,8 @@
+opencv-python-headless
+numpy
+streamlit
+torch
+torchvision
+torchaudio
+easyocr
+pyyaml
