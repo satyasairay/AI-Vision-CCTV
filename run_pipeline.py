@@ -28,6 +28,9 @@ from .rules import RuleEngine
 from .storage import EventLogger
 from .analytics.speed_estimator import SpeedEstimator
 from .analytics.dwell_time import DwellTimeMonitor
+from .analytics.wrong_way import WrongWayDetector
+from .analytics.duplicate_plate import DuplicatePlateDetector
+from .analytics.crowd_density import CrowdDensityMonitor
 
 
 def load_config(config_path: str) -> dict:
@@ -134,6 +137,47 @@ def main() -> None:
 
         rule_engine.register_handler("loitering", loitering_handler)
 
+    # Wrong-way detection
+    wrong_cfg = analytics_cfg.get("wrong_way", {})
+    wrong_enabled = wrong_cfg.get("enable", False)
+    wrong_detector: WrongWayDetector | None = None
+    if wrong_enabled:
+        ed = wrong_cfg.get("expected_direction", [1.0, 0.0])
+        thr = wrong_cfg.get("threshold", 0.0)
+        wrong_detector = WrongWayDetector(tuple(ed), thr)
+
+        def wrong_way_handler(context: dict) -> bool:
+            return context.get("wrong_way") is True
+
+        rule_engine.register_handler("wrong_way", wrong_way_handler)
+
+    # Duplicate plate detection
+    dup_cfg = analytics_cfg.get("duplicate_plate", {})
+    dup_enabled = dup_cfg.get("enable", False)
+    dup_detector: DuplicatePlateDetector | None = None
+    if dup_enabled:
+        window = dup_cfg.get("window", 300.0)
+        dup_detector = DuplicatePlateDetector(window_seconds=window)
+
+        def duplicate_plate_handler(context: dict) -> bool:
+            return context.get("duplicate_plate") is True
+
+        rule_engine.register_handler("duplicate_plate", duplicate_plate_handler)
+
+    # Crowd density monitoring
+    crowd_cfg = analytics_cfg.get("crowd_density", {})
+    crowd_enabled = crowd_cfg.get("enable", False)
+    crowd_monitor: CrowdDensityMonitor | None = None
+    if crowd_enabled:
+        zone = crowd_cfg.get("zone", [0, 0, 0, 0])
+        threshold = crowd_cfg.get("threshold", 10)
+        crowd_monitor = CrowdDensityMonitor(tuple(zone), threshold)
+
+        def crowd_density_handler(context: dict) -> bool:
+            return context.get("crowd") is True
+
+        rule_engine.register_handler("crowd_density", crowd_density_handler)
+
     # Open camera
     camera.open()
     try:
@@ -188,6 +232,28 @@ def main() -> None:
                         for event in events_speed:
                             logger.log(event)
 
+                # Wrong-way detection
+                if wrong_enabled and wrong_detector is not None:
+                    wrong_way_flag = wrong_detector.update(track_id, (x1, y1, x2, y2))
+                    if wrong_way_flag:
+                        ctx_wrong = {"track_id": track_id, "wrong_way": True}
+                        events_wrong = rule_engine.evaluate(ctx_wrong)
+                        for event in events_wrong:
+                            logger.log(event)
+
+                # Duplicate plate detection
+                if dup_enabled and dup_detector is not None:
+                    if plate_text:
+                        is_dup = dup_detector.update(plate_text)
+                        if is_dup:
+                            ctx_dup = {
+                                "license_plate": plate_text,
+                                "duplicate_plate": True,
+                            }
+                            events_dup = rule_engine.evaluate(ctx_dup)
+                            for event in events_dup:
+                                logger.log(event)
+
                 # Dwell time monitoring for vehicles if enabled
                 if dwell_enabled and dwell_monitor is not None:
                     import time
@@ -235,6 +301,16 @@ def main() -> None:
                     logger.log(event, image=eye_region)
 
                 # Dwell time monitoring for vehicles is handled in the vehicle loop
+
+            # Crowd density check across all person detections
+            if crowd_enabled and crowd_monitor is not None and person_detections:
+                # Build list of bounding boxes (x1,y1,x2,y2) from person detections
+                boxes = [(px1, py1, px2, py2) for (px1, py1, px2, py2, _, _) in person_detections]
+                is_crowd = crowd_monitor.count(boxes)
+                if is_crowd:
+                    events_crowd = rule_engine.evaluate({"crowd": True})
+                    for event in events_crowd:
+                        logger.log(event)
 
             # Optional: display frame for visual confirmation (press q to quit)
             cv2.imshow("Frame", frame)
