@@ -16,6 +16,9 @@ from pathlib import Path
 from typing import List, Dict, Any
 
 import streamlit as st
+import cv2
+import numpy as np
+import glob
 import yaml
 import pandas as pd
 
@@ -161,11 +164,33 @@ def main() -> None:
             st.sidebar.warning("Please enter an identity name.")
 
     # Main area: Live feed placeholder
-    st.header("Live Feed")
+    st.header("Live Feeds")
     st.write(
-        "The live camera feed will appear here when the pipeline is running. "
-        "Use the demo script to start processing a sample video."
+        "Below are the latest processed frames from each camera. "
+        "Run the multi-camera pipeline to update these images in real time."
     )
+    # Display latest frames saved by the pipeline (latest_frame_*.jpg)
+    latest_frames = []
+    pattern = str(Path(log_dir) / "latest_frame_*.jpg")
+    for path in glob.glob(pattern):
+        cam_id = Path(path).stem.replace("latest_frame_", "")
+        try:
+            img_bgr = cv2.imread(path)
+            if img_bgr is not None:
+                img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+                latest_frames.append((cam_id, img_rgb))
+        except Exception:
+            continue
+    if latest_frames:
+        cols = st.columns(len(latest_frames))
+        for col, (cam_id, img_rgb) in zip(cols, latest_frames):
+            col.subheader(f"Camera {cam_id}")
+            col.image(img_rgb, use_column_width=True)
+    else:
+        st.write("No processed frames available yet.")
+    # Button to refresh feeds
+    if st.button("Refresh Feeds"):
+        st.experimental_rerun()
 
     # Detection & Recognition results placeholder
     st.header("Detection & Recognition Results")
