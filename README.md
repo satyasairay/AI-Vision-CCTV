@@ -29,7 +29,7 @@ The platform supports a variety of surveillance features, each implemented in it
 | **Duplicate Plate Detection** | Detects repeated license plates within a time window. | `analytics/duplicate_plate.py` |
 | **Crowd Density** | Counts persons in a region and flags overcrowding. | `analytics/crowd_density.py` |
 | **Stop‑Line/Red‑Light Violations** | Triggers when vehicles cross a defined line while a red‑light flag is set. | `analytics/stop_line_violation.py` |
-| **Violence/Fight Detection** | 3D CNN (R3D-18) classification over short clips cropped around persons; tune thresholds per camera. | `analytics/fight_detection.py` |
+| **Violence/Fight Detection** | 3D CNN (R3D-18) classification over short clips; optionally load custom weights via `analytics.violence.weights_path` and tune thresholds per camera. | `analytics/fight_detection.py` |
 | **Weather & Lighting Adaptation** | Applies gamma correction to dark frames. | `analytics/weather_adapter.py` |
 | **Adaptive Frame Skipping** | Skips frames during idle periods to save resources. | `analytics/adaptive_frame_skipper.py` |
 | **Privacy Redaction & No‑Record Zones** | Blurs detections not on watchlists and excludes designated zones. | `analytics/privacy.py` |
@@ -83,11 +83,20 @@ The code is organized into modular packages:
 
    The main dependencies are OpenCV, EasyOCR, Streamlit, and PyYAML. Optional dependencies such as PyTorch are only required for heavy models.
 
-3. **Prepare model weights** (optional):
+3. **Prepare model weights**:
 
-   * Place YOLO weights for vehicles/persons under `models/` and update `vehicle_model_path` and `person_model_path` in `configs/default.yaml`.
-   * Place a mask classifier weight file at `models/mask_classifier.pt` if you wish to classify masks.
-   * If you choose SQLite storage, create the database path specified in the config; it will be created automatically on first run.
+   Use the setup helper to download weights into `models/` (requires `curl` or `wget`):
+   ```bash
+   export VEHICLE_MODEL_URL=https://internal.artifacts/vehicle.pt
+   export PERSON_MODEL_URL=https://internal.artifacts/person.pt
+   export MASK_MODEL_URL=https://internal.artifacts/mask.pt   # optional
+   export VIOLENCE_MODEL_URL=https://internal.artifacts/violence_r3d18.pth  # optional
+   export REID_MODEL_URL=https://internal.artifacts/reid_resnet18.pth       # optional
+   scripts/setup.sh
+   ```
+   - Provide optional SHA-256 hashes via `*_SHA256` variables for verification (e.g. `export VEHICLE_MODEL_SHA256=<hash>`).
+   - If you manage weights manually, place them in `models/` and skip the environment variables; `configs/default.yaml` already points to the expected filenames.
+   - For SQLite storage, the database file is created on first run under `logs/events.db` unless you override the path.
 
 4. **Review and customize the configuration** in `configs/default.yaml`. Pay particular attention to:
 
@@ -177,7 +186,7 @@ Quick smoke tests:
 Key targeted suites:
 - `python -m pytest tests/test_tracker.py`
 - `python -m pytest tests/test_camera_health.py`
-- `python -m pytest analytics/test_fight_detection.py`
+- `python -m pytest tests/test_fight_detection.py`
 
 Enable Prometheus metrics (`monitoring.enable_metrics: true`) to scrape processing latency, detection counts, and active tracks.
 

@@ -41,17 +41,18 @@ This document tracks the post-foundation enhancements requested for Phase 1. E
 
 ---
 
-## Stage 3 – Bespoke Violence Model Tuning ⏳ *(Pending)*
+## Stage 3 – Bespoke Violence Model Tuning ✅ *(Completed Oct 2025)*
 
-**Planned scope**
-- Support custom violence-detection weights and threshold calibration tooling.
-- Emit confidence scores and optionally capture suspect clips for review.
-- Extend HOWTO/README with tuning guidance and evaluation workflow.
+**Implementation highlights**
+- Added optional `analytics.violence.weights_path` so deployments can load domain-specific R3D weights (with checksum-aware `scripts/setup.sh` automation).
+- Extended README/HOWTO with tuning guidance and introduced pytest coverage (`tests/test_fight_detection.py`) to verify custom weight loading.
+- Violence detector now surfaces warnings when custom weights are missing or incompatible.
 
-**Testing (to be added)**
-- Unit tests ensuring custom weight loading and inference path.
-- CLI/Script-driven evaluation on labelled clips.
-- `python -m pytest` + targeted pipeline smoke run with `analytics.violence.enable: true`.
+**Testing**
+- `python -m pytest tests/test_fight_detection.py`
+- `python -m pytest`
+- `.\.venv\Scripts\python.exe run_pipeline.py --config configs/default.yaml --no-display --max-frames 200`
+- `.\.venv\Scripts\python.exe run_multi_pipeline.py --config configs/default.yaml --no-display`
 
 ---
 

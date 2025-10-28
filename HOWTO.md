@@ -15,6 +15,14 @@ This guide walks you through every major feature in the project, the current imp
   ```powershell
   .\.venv\Scripts\python.exe -m pip install -r requirements.txt
   ```
+- **Fetch model weights (optional, set URLs first)**
+  ```powershell
+  set VEHICLE_MODEL_URL=https://internal.artifacts/vehicle.pt
+  set PERSON_MODEL_URL=https://internal.artifacts/person.pt
+  set VIOLENCE_MODEL_URL=https://internal.artifacts/violence_r3d18.pth
+  scripts\setup.sh
+  ```
+  Provide `*_SHA256` variables for checksum validation when available. Skip this step if weights already exist under `models/`.
 - **Optional GUI support**  
   The default `requirements.txt` installs `opencv-python-headless`. To view frames in a window, replace it with `opencv-python`:
   ```powershell
@@ -225,7 +233,6 @@ This guide walks you through every major feature in the project, the current imp
 - `analytics/fight_detection.py`: ships with generic Kinetics weights; train on domain footage for higher precision.
 - `analytics/model_switcher.py`: logic for dynamic model swapping not implemented.
 - `analytics/camera_health.py`: needs integration with actual heartbeat/alarm outputs.
-- `scripts/setup.sh`: TODO for downloading model weights.
 
 ---
 
