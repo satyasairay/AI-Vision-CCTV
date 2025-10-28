@@ -15,23 +15,26 @@ import numpy as np
 
 
 class ANPR:
-    """Recognize license plates from vehicle images using an OCR engine."""
+    """Recognize license plates from vehicle images using an OCR engine.
 
-    def __init__(self, ocr_engine: Optional[str] = None) -> None:
-        """
-        Parameters
-        ----------
-        ocr_engine : str, optional
-            The OCR engine to use (currently only "easyocr" is supported). If
-            `None`, EasyOCR will be used by default.
-        """
+    Parameters
+    ----------
+    ocr_engine : str, optional
+        The OCR engine to use (currently only "easyocr" is supported).
+    languages : list[str], optional
+        List of language codes to use for OCR. This allows plates from
+        multiple regions/countries to be recognized (e.g. ["en", "hi"]).
+    """
+
+    def __init__(self, ocr_engine: Optional[str] = None, languages: Optional[list[str]] = None) -> None:
         self.ocr_engine = ocr_engine or "easyocr"
+        self.languages = languages or ["en"]
         self.reader: Optional[object] = None
         if self.ocr_engine == "easyocr":
             try:
                 import easyocr  # type: ignore
-                # Initialize the reader for English characters. GPU usage is disabled for portability.
-                self.reader = easyocr.Reader(["en"], gpu=False)
+                # Initialize the reader for specified languages. GPU usage is disabled for portability.
+                self.reader = easyocr.Reader(self.languages, gpu=False)
             except Exception:
                 # If EasyOCR is unavailable, leave reader as None; recognition will return empty strings
                 self.reader = None

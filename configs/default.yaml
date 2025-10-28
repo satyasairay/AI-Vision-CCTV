@@ -1,10 +1,8 @@
-"""
-Default configuration for the road security platform.
-
-Modify values to match your environment and camera settings. You can
-override these settings by providing your own configuration file when
-running the pipeline.
-"""
+# Default configuration for the road security platform.
+#
+# Modify values to match your environment and camera settings. You can
+# override these settings by providing your own configuration file when
+# running the pipeline.
 
 camera:
   # URL of the RTSP stream or path to a local video file
@@ -31,6 +29,10 @@ tracking:
 recognition:
   anpr_ocr_engine: "easyocr"
   eye_model_path: "models/eye_recognition.pt"
+  # List of language codes for ANPR. Adjust this list to support multi‑region
+  # plates (e.g. ["en", "hi"] for English and Hindi). These codes are passed
+  # directly to EasyOCR.
+  anpr_languages: ["en"]
   # A simple mapping from identity names to feature vectors for eye recognition.
   # The demo does not include sample data; populate this dictionary with numpy
   # arrays when enrolling new identities.
@@ -58,6 +60,66 @@ analytics:
     zone: [0, 0, 0, 0]
     # Threshold in seconds after which a loitering event is triggered
     threshold: 10.0
+  # Wrong-way detection settings
+  wrong_way:
+    enable: false
+    # Expected direction vector (dx, dy). Normalized internally.
+    expected_direction: [1.0, 0.0]
+    # Cosine threshold below which movement is considered wrong-way
+    threshold: 0.0
+  # Duplicate license plate detection settings
+  duplicate_plate:
+    enable: false
+    window: 300.0  # seconds
+  # Crowd density settings
+  crowd_density:
+    enable: false
+    # Zone coordinates [x1, y1, x2, y2] where crowd density is monitored
+    zone: [0, 0, 0, 0]
+    threshold: 10  # number of persons
+  # Stop‑line violation detection. Define a horizontal line (x1,y1,x2,y2)
+  stop_line:
+    enable: false
+    # Coordinates of the stop line. Vehicles crossing this line when
+    # red_light is true will trigger a violation.
+    line: [100, 400, 500, 400]
+    # Whether the red light is currently active. In a real deployment this
+    # flag should be driven by an external signal. For testing, set
+    # to true to always consider crossings as violations.
+    red_light: true
+  # Fight/violence detection settings
+  violence:
+    enable: false
+    window: 5  # number of frames to consider
+    change_threshold: 1.5  # relative area change to flag as violence
+  # Weather adaptation settings
+  weather:
+    enable: false
+    brightness_threshold: 80.0
+    gamma: 1.5
+  # Adaptive frame skipping
+  adaptive_skip:
+    enable: false
+    idle_threshold: 30
+    skip_frames: 10
+  # Camera health monitoring
+  camera_health:
+    enable: false
+    timeout: 10.0  # seconds
+  # Privacy and opt‑out settings
+  privacy:
+    enable: false
+    # List of no‑record zones; any detection inside these zones will not be
+    # processed or logged. Coordinates [x1,y1,x2,y2].
+    no_record_zones: []
+    # Enable blurring for detections not on watchlists.
+    blur_non_watchlist: true
+
+# Event storage backend. Choose between 'jsonl' (default) and 'sqlite'.
+storage_backend: jsonl  # or 'sqlite'
+database:
+  db_path: "logs/events.db"
+  image_dir: "logs/images"
 
 routing_rules:
   # Example rule: trigger when a license plate is on the watchlist

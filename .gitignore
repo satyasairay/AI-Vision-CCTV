@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+build/
+dist/
+.coverage
+.pytest_cache/
+.env
+.venv/
+venv/
+.env.*
+!.env.example
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+
+# Logs & runtime artifacts
+logs/
+*.log
+
+# Models & data
+models/
+sample_data/*.mp4
+sample_data/*.avi
+sample_data/*.jpg
+sample_data/*.png
+
+# Temporary
+*.tmp
+*.bak
+
+# Streamlit cache
+.streamlit/

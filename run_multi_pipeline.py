@@ -34,6 +34,18 @@ from .rules import RuleEngine
 from .storage import EventLogger
 from .analytics.speed_estimator import SpeedEstimator
 from .analytics.dwell_time import DwellTimeMonitor
+from .analytics.wrong_way import WrongWayDetector
+from .analytics.duplicate_plate import DuplicatePlateDetector
+from .analytics.crowd_density import CrowdDensityMonitor
+from .analytics.stop_line_violation import StopLineViolationDetector
+from .analytics.fight_detection import ViolenceDetector
+from .analytics.weather_adapter import WeatherAdapter
+from .analytics.adaptive_frame_skipper import AdaptiveFrameSkipper
+from .analytics.privacy import PrivacyManager
+from .analytics.camera_health import CameraHealthMonitor
+from .analytics.iot_integration import IoTController
+from .storage.database_logger import DatabaseEventLogger
+from .storage.audit_logger import AuditLogger
 
 
 def load_config(config_path: str) -> dict:
@@ -78,6 +90,79 @@ class CameraPipeline(threading.Thread):
             threshold = dwell_cfg.get("threshold", 10.0)
             self.dwell_monitor = DwellTimeMonitor(tuple(zone), threshold)
 
+        # Wrong-way detection
+        wrong_cfg = analytics_cfg.get("wrong_way", {})
+        self.wrong_enabled = wrong_cfg.get("enable", False)
+        self.wrong_detector: WrongWayDetector | None = None
+        if self.wrong_enabled:
+            ed = wrong_cfg.get("expected_direction", [1.0, 0.0])
+            thr = wrong_cfg.get("threshold", 0.0)
+            self.wrong_detector = WrongWayDetector(tuple(ed), thr)
+        # Duplicate plate detection
+        dup_cfg = analytics_cfg.get("duplicate_plate", {})
+        self.dup_enabled = dup_cfg.get("enable", False)
+        self.dup_detector: DuplicatePlateDetector | None = None
+        if self.dup_enabled:
+            window = dup_cfg.get("window", 300.0)
+            self.dup_detector = DuplicatePlateDetector(window_seconds=window)
+        # Crowd density monitoring
+        crowd_cfg = analytics_cfg.get("crowd_density", {})
+        self.crowd_enabled = crowd_cfg.get("enable", False)
+        self.crowd_monitor: CrowdDensityMonitor | None = None
+        if self.crowd_enabled:
+            cz = crowd_cfg.get("zone", [0, 0, 0, 0])
+            thr_c = crowd_cfg.get("threshold", 10)
+            self.crowd_monitor = CrowdDensityMonitor(tuple(cz), thr_c)
+
+        # Stop‑line violation detection per camera
+        stop_cfg = analytics_cfg.get("stop_line", {})
+        self.stop_enabled = stop_cfg.get("enable", False)
+        self.stop_detector: StopLineViolationDetector | None = None
+        self.stop_red_light = stop_cfg.get("red_light", True)
+        if self.stop_enabled:
+            line = stop_cfg.get("line", [0, 0, 0, 0])
+            self.stop_detector = StopLineViolationDetector(tuple(line))
+
+        # Violence detection per camera
+        vio_cfg = analytics_cfg.get("violence", {})
+        self.violence_enabled = vio_cfg.get("enable", False)
+        self.violence_detector: ViolenceDetector | None = None
+        if self.violence_enabled:
+            window = vio_cfg.get("window", 5)
+            thr = vio_cfg.get("change_threshold", 1.5)
+            self.violence_detector = ViolenceDetector(window=window, change_threshold=thr)
+
+        # Weather adaptation
+        weather_cfg = analytics_cfg.get("weather", {})
+        self.weather_enabled = weather_cfg.get("enable", False)
+        self.weather_adapter: WeatherAdapter | None = None
+        if self.weather_enabled:
+            bthr = weather_cfg.get("brightness_threshold", 80.0)
+            gamma = weather_cfg.get("gamma", 1.5)
+            self.weather_adapter = WeatherAdapter(brightness_threshold=bthr, gamma=gamma)
+
+        # Adaptive frame skipping
+        skip_cfg = analytics_cfg.get("adaptive_skip", {})
+        self.skip_enabled = skip_cfg.get("enable", False)
+        self.skipper: AdaptiveFrameSkipper | None = None
+        self.frame_index: int = 0
+        if self.skip_enabled:
+            idle_thr = skip_cfg.get("idle_threshold", 30)
+            skip_frames = skip_cfg.get("skip_frames", 10)
+            self.skipper = AdaptiveFrameSkipper(idle_threshold=idle_thr, skip_frames=skip_frames)
+
+        # Privacy manager
+        priv_cfg = analytics_cfg.get("privacy", {})
+        self.privacy_enabled = priv_cfg.get("enable", False)
+        self.privacy_manager: PrivacyManager | None = None
+        if self.privacy_enabled:
+            zones = priv_cfg.get("no_record_zones", []) or []
+            self.privacy_manager = PrivacyManager(no_record_zones=[tuple(z) for z in zones])
+            self.blur_non_watchlist = priv_cfg.get("blur_non_watchlist", True)
+
+        # IoT controller (shared logger passed as argument but we might need IoT)
+        self.iot = IoTController(log_dir=global_cfg.get("storage", {}).get("log_dir", "logs"))
+
     def run(self) -> None:
         # Initialize camera
         source = self.camera_cfg.get("source")
@@ -96,7 +181,7 @@ class CameraPipeline(threading.Thread):
         tracker = DeepSortTracker(tracking_cfg.get("max_age", 30), tracking_cfg.get("distance_threshold", 50.0))
 
         recog_cfg = self.global_cfg.get("recognition", {})
-        anpr = ANPR(recog_cfg.get("anpr_ocr_engine"))
+        anpr = ANPR(recog_cfg.get("anpr_ocr_engine"), languages=recog_cfg.get("anpr_languages"))
         eye_recognition = EyeRecognition(recog_cfg.get("eye_model_path"), database=recog_cfg.get("eye_database"))
 
         # Rule engine with custom handlers
@@ -127,26 +212,67 @@ class CameraPipeline(threading.Thread):
                 return context.get("dwell_time") is not None
             rule_engine.register_handler("loitering", loitering_handler)
 
+        if self.wrong_enabled and self.wrong_detector is not None:
+            def wrong_way_handler(context: dict) -> bool:
+                return context.get("wrong_way") is True
+            rule_engine.register_handler("wrong_way", wrong_way_handler)
+
+        if self.dup_enabled and self.dup_detector is not None:
+            def duplicate_plate_handler(context: dict) -> bool:
+                return context.get("duplicate_plate") is True
+            rule_engine.register_handler("duplicate_plate", duplicate_plate_handler)
+
+        if self.crowd_enabled and self.crowd_monitor is not None:
+            def crowd_density_handler(context: dict) -> bool:
+                return context.get("crowd") is True
+            rule_engine.register_handler("crowd_density", crowd_density_handler)
+
+        # Stop‑line violation handler
+        if self.stop_enabled and self.stop_detector is not None:
+            def stop_line_handler(context: dict) -> bool:
+                return context.get("stop_line_violation") is True
+            rule_engine.register_handler("stop_line_violation", stop_line_handler)
+
+        # Violence handler
+        if self.violence_enabled and self.violence_detector is not None:
+            def violence_handler(context: dict) -> bool:
+                return context.get("violence") is True
+            rule_engine.register_handler("violence", violence_handler)
+
         # Save the last processed frame to disk for dashboard streaming
         output_dir = Path(self.global_cfg.get("storage", {}).get("log_dir", "logs"))
         output_dir.mkdir(parents=True, exist_ok=True)
         latest_frame_path = output_dir / f"latest_frame_{self.cam_id}.jpg"
 
         while not self.stop_event.is_set():
+            # Increment frame index for adaptive skipping
+            self.frame_index += 1
+            if self.skip_enabled and self.skipper is not None and self.skipper.should_skip(self.frame_index):
+                # Skip frame processing but still read from camera
+                ret, _ = camera.read()
+                if not ret:
+                    break
+                continue
             ret, frame = camera.read()
             if not ret:
                 break
+            # Weather adaptation
+            if self.weather_enabled and self.weather_adapter is not None:
+                frame = self.weather_adapter.preprocess(frame)
+
+            # Collect detection info for privacy
+            det_info: list = []
+
             # Vehicle detection and tracking
             vehicle_detections = vehicle_detector.detect(frame)
             tracked_objects = tracker.update([(x1, y1, x2, y2, score) for (x1, y1, x2, y2, score) in vehicle_detections])
-            # Process each tracked vehicle for ANPR
             for obj in tracked_objects:
                 t_id, x1, y1, x2, y2 = obj
                 x1, y1 = max(0, x1), max(0, y1)
                 x2, y2 = min(frame.shape[1], x2), min(frame.shape[0], y2)
                 plate_img = frame[y1:y2, x1:x2]
                 plate_text, plate_conf = anpr.recognize(plate_img)
-                # Gather watchlist
+                # Assemble context and watchlist
                 plate_watchlist: List[str] = []
                 for rule in self.rules_cfg:
                     if rule.get("type") == "license_plate_watchlist":
@@ -163,41 +289,66 @@ class CameraPipeline(threading.Thread):
                 events = rule_engine.evaluate(context)
                 for event in events:
                     self.logger.log(event, image=plate_img)
-
+                    self.iot.trigger(event)
                 # Speed estimation
                 if self.speed_enabled and self.speed_estimator is not None:
                     import time
                     now = time.time()
-                    speed = self.speed_estimator.update(t_id, (x1, y1, x2, y2), now)
-                    if speed is not None:
-                        ctx_speed = {"track_id": t_id, "speed": speed}
-                        events_speed = rule_engine.evaluate(ctx_speed)
-                        for event in events_speed:
+                    spd = self.speed_estimator.update(t_id, (x1, y1, x2, y2), now)
+                    if spd is not None:
+                        ctx_speed = {"track_id": t_id, "speed": spd}
+                        events_spd = rule_engine.evaluate(ctx_speed)
+                        for event in events_spd:
                             self.logger.log(event)
-
+                            self.iot.trigger(event)
                 # Dwell time monitoring
                 if self.dwell_enabled and self.dwell_monitor is not None:
                     import time
                     now = time.time()
                     cx = (x1 + x2) / 2.0
                     cy = (y1 + y2) / 2.0
-                    dwell_time = self.dwell_monitor.update(t_id, (cx, cy), now)
-                    if dwell_time is not None:
-                        ctx_dwell = {"track_id": t_id, "dwell_time": dwell_time}
-                        events_dwell = rule_engine.evaluate(ctx_dwell)
-                        for event in events_dwell:
+                    dtm = self.dwell_monitor.update(t_id, (cx, cy), now)
+                    if dtm is not None:
+                        ctx_dwell = {"track_id": t_id, "dwell_time": dtm}
+                        events_dt = rule_engine.evaluate(ctx_dwell)
+                        for event in events_dt:
                             self.logger.log(event)
+                            self.iot.trigger(event)
+                # Wrong‑way detection
+                if self.wrong_enabled and self.wrong_detector is not None:
+                    wrong = self.wrong_detector.update(t_id, (x1, y1, x2, y2))
+                    if wrong:
+                        events_wrong = rule_engine.evaluate({"wrong_way": True})
+                        for event in events_wrong:
+                            self.logger.log(event)
+                            self.iot.trigger(event)
+                # Duplicate plate detection
+                if self.dup_enabled and self.dup_detector is not None:
+                    if plate_text:
+                        dup = self.dup_detector.update(plate_text)
+                        if dup:
+                            events_dup = rule_engine.evaluate({"duplicate_plate": True, "license_plate": plate_text})
+                            for event in events_dup:
+                                self.logger.log(event)
+                                self.iot.trigger(event)
+                # Stop‑line violation detection
+                if self.stop_enabled and self.stop_detector is not None:
+                    if self.stop_detector.update(t_id, (x1, y1, x2, y2), red_light=self.stop_red_light):
+                        events_stop = rule_engine.evaluate({"stop_line_violation": True})
+                        for event in events_stop:
+                            self.logger.log(event)
+                            self.iot.trigger(event)
+                # Append detection info for privacy
+                det_info.append((x1, y1, x2, y2, "vehicle", 1.0, plate_text))
 
-            # Person detection and recognition
+            # Person detection
             person_detections = person_detector.detect(frame)
             for (px1, py1, px2, py2, label, score) in person_detections:
                 px1, py1 = max(0, px1), max(0, py1)
                 px2, py2 = min(frame.shape[1], px2), min(frame.shape[0], py2)
                 person_img = frame[py1:py2, px1:px2]
-                # Extract eye region (top third)
                 eye_region = person_img[0: max(1, (py2 - py1) // 3), :]
                 person_id, person_conf = eye_recognition.identify(eye_region)
-                # Gather person watchlist
                 person_watchlist: List[str] = []
                 for rule in self.rules_cfg:
                     if rule.get("type") == "person_identity_watchlist":
@@ -213,13 +364,48 @@ class CameraPipeline(threading.Thread):
                 events_p = rule_engine.evaluate(context_p)
                 for event in events_p:
                     self.logger.log(event, image=eye_region)
+                    self.iot.trigger(event)
+                # Violence detection
+                if self.violence_enabled and self.violence_detector is not None:
+                    if self.violence_detector.update(track_id=0, bbox=(px1, py1, px2, py2)):
+                        events_vio = rule_engine.evaluate({"violence": True})
+                        for event in events_vio:
+                            self.logger.log(event)
+                            self.iot.trigger(event)
+                # Append detection info for privacy
+                det_info.append((px1, py1, px2, py2, label, score, person_id if person_id else None))
 
-            # Save the latest processed frame for the dashboard to display
+            # Crowd density
+            if self.crowd_enabled and self.crowd_monitor is not None and person_detections:
+                boxes = [(px1, py1, px2, py2) for (px1, py1, px2, py2, _, _) in person_detections]
+                crowd = self.crowd_monitor.count(boxes)
+                if crowd:
+                    events_crowd = rule_engine.evaluate({"crowd": True})
+                    for event in events_crowd:
+                        self.logger.log(event)
+                        self.iot.trigger(event)
+
+            # Apply privacy redaction
+            if self.privacy_enabled and self.privacy_manager is not None:
+                # Build watchlist of plates for redaction
+                wlist: list[str] = []
+                for rule in self.rules_cfg:
+                    if rule.get("type") == "license_plate_watchlist":
+                        wl = rule.get("watchlist", [])
+                        if isinstance(wl, list):
+                            wlist.extend(wl)
+                self.privacy_manager.redact_detections(frame, det_info, watchlist=wlist)
+
+            # Update adaptive skipper
+            if self.skip_enabled and self.skipper is not None:
+                has_activity = bool(vehicle_detections) or bool(person_detections)
+                self.skipper.update(self.frame_index, has_activity)
+
+            # Save latest frame
             try:
                 cv2.imwrite(str(latest_frame_path), frame)
             except Exception:
                 pass
-            # Sleep briefly to allow other threads to run
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
 
@@ -242,9 +428,16 @@ def main() -> None:
     else:
         raise ValueError("No camera configuration found in config file.")
 
-    # Shared event logger
+    # Shared event logger: choose between JSONL and SQLite
     storage_cfg = config.get("storage", {})
-    logger = EventLogger(storage_cfg.get("log_dir", "logs"))
+    backend = config.get("storage_backend", "jsonl").lower()
+    if backend == "sqlite":
+        db_cfg = config.get("database", {})
+        db_path = db_cfg.get("db_path", "events.db")
+        image_dir = db_cfg.get("image_dir", "logs/images")
+        logger = DatabaseEventLogger(db_path=db_path, image_dir=image_dir)
+    else:
+        logger = EventLogger(storage_cfg.get("log_dir", "logs"))
 
     rules_cfg = config.get("routing_rules", [])
 

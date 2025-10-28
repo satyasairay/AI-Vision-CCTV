@@ -22,6 +22,8 @@ import glob
 import yaml
 import pandas as pd
 
+from road_security.storage.audit_logger import AuditLogger
+
 
 def load_config() -> dict:
     """Load the dashboard configuration file.
@@ -91,6 +93,9 @@ def update_watchlist(new_plate: str, config_path: Path) -> None:
     if updated:
         with open(config_path, "w") as f:
             yaml.safe_dump(config, f)
+        # Record this action in the audit log
+        audit = AuditLogger(config.get("storage", {}).get("log_dir", "logs"))
+        audit.log_action("add_watchlist_plate", {"plate": new_plate})
 
 
 
@@ -157,6 +162,9 @@ def main() -> None:
             if updated:
                 with open(config_path, "w") as f:
                     yaml.safe_dump(current_config, f)
+                # Audit logging
+                audit = AuditLogger(current_config.get("storage", {}).get("log_dir", "logs"))
+                audit.log_action("add_watchlist_identity", {"identity": new_identity})
                 st.sidebar.success(f"Added {new_identity} to person watchlist. Restart the pipeline to apply.")
             else:
                 st.sidebar.warning("Could not update person watchlist.")
@@ -199,17 +207,26 @@ def main() -> None:
         "integrated."
     )
 
-    # Event logs table
-    st.header("Event Logs")
+    # Event analytics and logs
+    st.header("Event Analytics & Logs")
     if events:
-        # Flatten rule info for better display
+        # Compute event counts by type for a bar chart
+        from road_security.analytics.event_stats import event_counts_by_type
+        counts = event_counts_by_type(events)
+        st.subheader("Event Counts by Type")
+        st.bar_chart(counts)
+
+        # Display raw event log table
+        st.subheader("Event Log Details")
         flattened: List[Dict[str, Any]] = []
         for e in events:
             row = {
                 "timestamp": e.get("timestamp"),
                 "rule_type": e.get("rule", {}).get("type"),
+                "camera_id": e.get("context", {}).get("camera_id"),
                 "license_plate": e.get("context", {}).get("license_plate"),
-                "confidence": e.get("context", {}).get("license_plate_confidence"),
+                "person_identity": e.get("context", {}).get("person_identity"),
+                "confidence": e.get("context", {}).get("license_plate_confidence") or e.get("context", {}).get("person_identity_confidence"),
                 "track_id": e.get("context", {}).get("track_id"),
             }
             flattened.append(row)
@@ -221,6 +238,54 @@ def main() -> None:
     # Refresh button to reload events
     if st.button("Refresh Logs"):
         st.experimental_rerun()
+
+    # Custom rule builder UI
+    st.header("Custom Rule Builder")
+    st.write("Create or modify routing rules without editing YAML manually.")
+    rule_types = ["license_plate_watchlist", "person_identity_watchlist", "over_speed", "loitering", "wrong_way", "duplicate_plate", "crowd_density", "stop_line_violation", "violence"]
+    selected_type = st.selectbox("Rule Type", rule_types)
+    param_input = st.text_input("Parameters (comma-separated)", help="For watchlists, enter values. For thresholds, enter numeric value.")
+    if st.button("Add/Update Rule"):
+        config_path = Path(__file__).resolve().parents[1] / "configs" / "default.yaml"
+        with open(config_path, "r") as f:
+            current_cfg = yaml.safe_load(f)
+        rules = current_cfg.get("routing_rules", [])
+        updated = False
+        if selected_type in ["license_plate_watchlist", "person_identity_watchlist"]:
+            values = [v.strip() for v in param_input.split(",") if v.strip()]
+            # find existing rule and extend watchlist
+            for rule in rules:
+                if rule.get("type") == selected_type:
+                    wl = rule.get("watchlist", [])
+                    if isinstance(wl, list):
+                        for v in values:
+                            if v not in wl:
+                                wl.append(v)
+                        rule["watchlist"] = wl
+                        updated = True
+                        break
+            # if rule not found, create new
+            if not updated:
+                rules.append({"type": selected_type, "watchlist": values})
+                updated = True
+        elif selected_type == "over_speed":
+            try:
+                threshold = float(param_input)
+            except ValueError:
+                st.warning("Please enter a numeric speed threshold.")
+                threshold = None
+            if threshold is not None:
+                rules.append({"type": selected_type, "threshold": threshold})
+                updated = True
+        else:
+            # Generic rule without params
+            rules.append({"type": selected_type})
+            updated = True
+        if updated:
+            current_cfg["routing_rules"] = rules
+            with open(config_path, "w") as f:
+                yaml.safe_dump(current_cfg, f)
+            st.success(f"Rule '{selected_type}' updated. Please restart the pipeline to apply.")
 
 
 if __name__ == "__main__":
