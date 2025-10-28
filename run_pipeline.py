@@ -19,10 +19,11 @@ import yaml
 from pathlib import Path
 
 import cv2
+import time
 
 try:
     from .camera_adapters import RTSPCamera, LocalFileCamera
-    from .detection import VehicleDetector, PersonDetector
+    from .detection import build_detector
     from .tracking import DeepSortTracker
     from .recognition import ANPR, EyeRecognition
     from .rules import RuleEngine
@@ -43,9 +44,10 @@ try:
     from .analytics.iot_integration import IoTController
     from .storage.database_logger import DatabaseEventLogger
     from .storage.audit_logger import AuditLogger
+    from .monitoring import MetricsExporter
 except ImportError:
     from camera_adapters import RTSPCamera, LocalFileCamera
-    from detection import VehicleDetector, PersonDetector
+    from detection import build_detector
     from tracking import DeepSortTracker
     from recognition import ANPR, EyeRecognition
     from rules import RuleEngine
@@ -66,6 +68,7 @@ except ImportError:
     from analytics.iot_integration import IoTController
     from storage.database_logger import DatabaseEventLogger
     from storage.audit_logger import AuditLogger
+    from monitoring import MetricsExporter
 
 
 def load_config(config_path: str) -> dict:
@@ -94,35 +97,73 @@ def main() -> None:
         default=None,
         help="Optional cap on processed frames before exiting.",
     )
+    parser.add_argument(
+        "--metrics-port",
+        type=int,
+        default=None,
+        help="Expose Prometheus metrics on this port (overrides config).",
+    )
     args = parser.parse_args()
 
     config = load_config(args.config)
     display_enabled = not args.no_display
     max_frames = args.max_frames
+    monitoring_cfg = config.get("monitoring", {})
+    metrics_port = args.metrics_port if args.metrics_port is not None else monitoring_cfg.get("metrics_port")
+    metrics_enabled = monitoring_cfg.get("enable_metrics", False) or metrics_port is not None
+    metrics: MetricsExporter | None = None
+    if metrics_enabled:
+        metrics = MetricsExporter(port=metrics_port or 9095)
 
     # Initialize components from configuration
     camera = create_camera(config)
     detection_cfg = config.get("detection", {})
-    vehicle_detector = VehicleDetector(detection_cfg.get("vehicle_model_path"), detection_cfg.get("device", "cpu"))
+    detector_device = detection_cfg.get("device", "cpu")
+    vehicle_backend = detection_cfg.get("vehicle_backend", "auto")
+    person_backend = detection_cfg.get("person_backend", "auto")
+    try:
+        vehicle_detector = build_detector(
+            "vehicle",
+            vehicle_backend,
+            model_path=detection_cfg.get("vehicle_model_path"),
+            device=detector_device,
+        )
+    except KeyError as exc:
+        raise RuntimeError(f"Unsupported vehicle detector backend '{vehicle_backend}'.") from exc
     # Person detector can optionally use a mask classifier model to distinguish
     # masked vs. unmasked faces. The path is read from the detection config.
-    person_detector = PersonDetector(
-        detection_cfg.get("person_model_path"),
-        detection_cfg.get("device", "cpu"),
-        mask_model_path=detection_cfg.get("mask_model_path"),
-    )
+    try:
+        person_detector = build_detector(
+            "person",
+            person_backend,
+            model_path=detection_cfg.get("person_model_path"),
+            device=detector_device,
+            mask_model_path=detection_cfg.get("mask_model_path"),
+        )
+    except KeyError as exc:
+        raise RuntimeError(f"Unsupported person detector backend '{person_backend}'.") from exc
 
     tracking_cfg = config.get("tracking", {})
-    # distance_threshold controls how close detections must be to associate with an existing track
     max_age = tracking_cfg.get("max_age", 30)
-    distance_threshold = tracking_cfg.get("distance_threshold", 50.0)
-    tracker = DeepSortTracker(max_age, distance_threshold)
+    tracker = DeepSortTracker(
+        max_age=max_age,
+        n_init=tracking_cfg.get("n_init", 3),
+        iou_threshold=tracking_cfg.get("iou_threshold", 0.3),
+        appearance_weight=tracking_cfg.get("appearance_weight", 0.1),
+    )
 
     recognition_cfg = config.get("recognition", {})
     anpr = ANPR(recognition_cfg.get("anpr_ocr_engine"), languages=recognition_cfg.get("anpr_languages"))
     # Pass optional eye database to the recognizer; if none provided, the recognizer will act as a stub
     eye_database = recognition_cfg.get("eye_database")
-    eye_recognition = EyeRecognition(recognition_cfg.get("eye_model_path"), database=eye_database)
+    if not eye_database:
+        eye_database = recognition_cfg.get("eye_database_path")
+    eye_recognition = EyeRecognition(
+        recognition_cfg.get("eye_model_path"),
+        database=eye_database,
+        device=recognition_cfg.get("eye_device", detector_device),
+        threshold=recognition_cfg.get("eye_threshold", 0.65),
+    )
 
     storage_cfg = config.get("storage", {})
     # Choose storage backend: JSONL (default) or SQLite
@@ -259,9 +300,18 @@ def main() -> None:
     violence_enabled = violence_cfg.get("enable", False)
     violence_detector: ViolenceDetector | None = None
     if violence_enabled:
-        window = violence_cfg.get("window", 5)
-        thresh = violence_cfg.get("change_threshold", 1.5)
-        violence_detector = ViolenceDetector(window=window, change_threshold=thresh)
+        window = violence_cfg.get("window", 16)
+        threshold_v = violence_cfg.get("threshold", 0.55)
+        stride_v = violence_cfg.get("stride", 2)
+        keywords = violence_cfg.get("keywords")
+        violence_device = violence_cfg.get("device", detector_device)
+        violence_detector = ViolenceDetector(
+            window=window,
+            threshold=threshold_v,
+            stride=stride_v,
+            device=violence_device,
+            violent_keywords=keywords,
+        )
 
         def violence_handler(context: dict) -> bool:
             return context.get("violence") is True
@@ -301,6 +351,7 @@ def main() -> None:
     camera.open()
     try:
         while True:
+            frame_start = time.perf_counter()
             # Increment frame index and apply adaptive skipping
             frame_index += 1
             if skip_enabled and skipper is not None and skipper.should_skip(frame_index):
@@ -323,7 +374,11 @@ def main() -> None:
 
             # Vehicle detection
             vehicle_detections = vehicle_detector.detect(frame)
-            tracked_objects = tracker.update([(x1, y1, x2, y2, score) for (x1, y1, x2, y2, score) in vehicle_detections])
+            tracked_objects = tracker.update(
+                [(x1, y1, x2, y2, score) for (x1, y1, x2, y2, score) in vehicle_detections],
+                frame=frame,
+            )
+            active_track_count = len(tracked_objects)
 
             # For each tracked vehicle, perform ANPR
             for obj in tracked_objects:
@@ -371,7 +426,6 @@ def main() -> None:
 
                 # Speed estimation for each tracked vehicle if enabled
                 if speed_enabled and speed_estimator is not None:
-                    import time
                     now = time.time()
                     speed = speed_estimator.update(track_id, (x1, y1, x2, y2), now)
                     if speed is not None:
@@ -410,7 +464,6 @@ def main() -> None:
 
                 # Dwell time monitoring for vehicles if enabled
                 if dwell_enabled and dwell_monitor is not None:
-                    import time
                     now = time.time()
                     # compute centroid of vehicle bbox
                     cx = (x1 + x2) / 2.0
@@ -428,7 +481,7 @@ def main() -> None:
 
             # Person detection (optional)
             person_detections = person_detector.detect(frame)
-            for (px1, py1, px2, py2, label, score) in person_detections:
+            for det_idx, (px1, py1, px2, py2, label, score) in enumerate(person_detections):
                 # Crop the person bounding box
                 px1 = max(0, px1)
                 py1 = max(0, py1)
@@ -458,7 +511,10 @@ def main() -> None:
 
                 # Violence detection for this person
                 if violence_enabled and violence_detector is not None:
-                    if violence_detector.update(track_id=0, bbox=(px1, py1, px2, py2)):
+                    center_x = (px1 + px2) // 2
+                    center_y = (py1 + py2) // 2
+                    track_hash = hash((center_x // 10, center_y // 10, det_idx % 4))
+                    if violence_detector.update(frame, (px1, py1, px2, py2), track_id=track_hash):
                         ctx_vio = {"violence": True}
                         events_vio = rule_engine.evaluate(ctx_vio)
                         for event in events_vio:
@@ -496,6 +552,15 @@ def main() -> None:
             if skip_enabled and skipper is not None:
                 has_activity = bool(vehicle_detections) or bool(person_detections)
                 skipper.update(frame_index, has_activity)
+
+            if metrics is not None:
+                metrics.record_frame(
+                    "main",
+                    time.perf_counter() - frame_start,
+                    len(vehicle_detections),
+                    len(person_detections),
+                    active_track_count,
+                )
 
             if max_frames is not None and frame_index >= max_frames:
                 break

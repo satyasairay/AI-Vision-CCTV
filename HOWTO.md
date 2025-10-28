@@ -68,9 +68,9 @@ This guide walks you through every major feature in the project, the current imp
 | **Camera Input (RTSP & Files)** | `camera_adapters/rtsp_camera.py`, `camera_adapters/local_file.py` | Implemented | Set `camera.source` (or each `cameras[n].source`) to an RTSP URL (`rtsp://...`) or file path. |
 | **Vehicle Detection** | `detection/vehicle_detector.py` | Implemented w/ YOLO fallback | Provide model path in `detection.vehicle_model_path`. Without a model, falls back to background subtraction. |
 | **Person Detection & Mask Classification** | `detection/person_detector.py`, `detection/mask_classifier.py` | Detection implemented, mask clf placeholder | Toggle by setting `detection.person_model_path` and optional `mask_model_path` for masked/no-mask classification. |
-| **Tracking (Deep SORT)** | `tracking/deep_sort.py` | Simplified placeholder | Uses centroid matching. Works for demos but not production-grade. |
+| **Tracking (Deep SORT)** | `tracking/deep_sort.py` | Kalman + appearance matching | Constant-velocity Kalman filter with Hungarian association and colour histograms. |
 | **ANPR (License Plate OCR)** | `recognition/anpr.py` | Implemented (EasyOCR dependency) | Requires EasyOCR model download (handled via `pip install easyocr`). Called automatically after vehicle detection. |
-| **Eye Recognition** | `recognition/eye_recognition.py` | Placeholder | Needs trained embeddings. Populate `recognition.eye_database` in config and provide `eye_model_path`. |
+| **Eye Recognition** | `recognition/eye_recognition.py` | Implemented (MobileNet embeddings) | Use `scripts/enroll_identity.py` to generate embeddings and update `recognition.eye_database` or `.npz` path. |
 | **Re-Identification** | `recognition/reid.py` | Placeholder | Hooks available; not plugged into pipeline yet. |
 | **Rule Engine** | `rules/rule_engine.py` | Implemented | Configure rules under `routing_rules` in YAML. Custom handlers registered in pipeline. |
 | **Event Logging (JSONL / SQLite)** | `storage/event_logger.py`, `storage/database_logger.py` | Implemented | Switch via `storage_backend` (`jsonl` or `sqlite`). Configure paths in `storage` and `database` sections. |
@@ -81,7 +81,7 @@ This guide walks you through every major feature in the project, the current imp
 | **Analytics: Duplicate Plate** | `analytics/duplicate_plate.py` | Implemented | Requires plate recognition; set `analytics.duplicate_plate.enable`. |
 | **Analytics: Crowd Density** | `analytics/crowd_density.py` | Implemented | Enable plus zone & person threshold. |
 | **Analytics: Stop-Line Violation** | `analytics/stop_line_violation.py` | Implemented | Define stop line coordinates and `red_light` in config. |
-| **Analytics: Violence Detection** | `analytics/fight_detection.py` | Placeholder heuristic | Uses bounding box motion heuristic; replace with ML model for production. |
+| **Analytics: Violence Detection** | `analytics/fight_detection.py` | Model-based (R3D-18) | Pretrained 3D CNN on Kinetics; tune `analytics.violence` window/threshold/device in config. |
 | **Analytics: Weather Adapter** | `analytics/weather_adapter.py` | Implemented | Adjusts brightness/gamma before processing. Enable in `analytics.weather`. |
 | **Analytics: Adaptive Frame Skipper** | `analytics/adaptive_frame_skipper.py` | Implemented | Skips frames during inactivity; configure thresholds. |
 | **Analytics: Privacy Manager** | `analytics/privacy.py` | Implemented | Define `no_record_zones` and `blur_non_watchlist` to redact frames. |
@@ -90,8 +90,8 @@ This guide walks you through every major feature in the project, the current imp
 | **Analytics: IoT Integration** | `analytics/iot_integration.py` | Implemented stub | Writes to console; extend to control relays/alarms. |
 | **Analytics: Event Stats** | `analytics/event_stats.py` | Utility function | Example to tally events; not wired into pipeline output. |
 | **Dashboard (Streamlit)** | `dashboard/app.py` | Implemented prototype | Displays watchlists, events, allows adding plates. Run `streamlit run dashboard/app.py`. |
-| **Scripts** | `scripts/setup.sh`, `scripts/run_demo.sh`, `scripts/enroll_identity.py`, `scripts/generate_sample_video.py` | Setup + placeholder tooling | `enroll_identity.py` helps build the eye-recognition database (requires manual data). |
-| **Tests** | `tests/` | Placeholder | Currently empty; ready for future unit tests. |
+| **Scripts & Tools** | `scripts/setup.sh`, `scripts/run_demo.sh`, `scripts/enroll_identity.py`, `scripts/generate_sample_video.py`, `tools/calibration_app.py` | Setup + utilities | Enroll eye embeddings, generate demo footage, and run `streamlit run tools/calibration_app.py` for zone calibration. |
+| **Tests** | `tests/` | Implemented (pytest) | Run `pytest` for tracker, detection, recognition, and analytics smoke tests. |
 
 ---
 
@@ -110,14 +110,26 @@ This guide walks you through every major feature in the project, the current imp
 - **Detection & Recognition**
   ```yaml
   detection:
+    vehicle_backend: "auto"
+    person_backend: "auto"
     vehicle_model_path: "models/vehicle_detector.pt"
     person_model_path: "models/person_detector.pt"
+    device: "cpu"
     mask_model_path: "models/mask_classifier.pt"  # optional
   recognition:
     anpr_ocr_engine: "easyocr"
     anpr_languages: ["en"]
     eye_model_path: "models/eye_recognition.pt"
+    eye_threshold: 0.65
+    eye_device: "cpu"
     eye_database: {}
+  ```
+
+- **Monitoring**
+  ```yaml
+  monitoring:
+    enable_metrics: false
+    metrics_port: 9095
   ```
 
 - **Analytics toggles**  
@@ -161,13 +173,11 @@ This guide walks you through every major feature in the project, the current imp
 
 ## 7. Known Placeholders / TODOs
 
-- `tracking/deep_sort.py`: simplified centroid matching instead of true Deep SORT.
-- `recognition/eye_recognition.py`: requires real embeddings and inference model.
+- `tracking/deep_sort.py`: colour histogram appearance only; swap for learned re-ID embeddings.
 - `recognition/reid.py`: scaffolded, not plugged in.
-- `analytics/fight_detection.py`: heuristic-only; replace with real model.
+- `analytics/fight_detection.py`: ships with generic Kinetics weights; train on domain footage for higher precision.
 - `analytics/model_switcher.py`: logic for dynamic model swapping not implemented.
 - `analytics/camera_health.py`: needs integration with actual heartbeat/alarm outputs.
-- `tests/`: placeholder package; add unit/integration tests as components mature.
 - `scripts/setup.sh`: TODO for downloading model weights.
 
 ---

@@ -9,8 +9,12 @@ class labels.
 
 from .vehicle_detector import VehicleDetector
 from .person_detector import PersonDetector
+from .registry import build_detector, register_detector, available_detectors
 
 __all__ = [
     "VehicleDetector",
     "PersonDetector",
+    "build_detector",
+    "register_detector",
+    "available_detectors",
 ]

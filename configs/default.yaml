@@ -14,6 +14,11 @@ camera:
   target_fps: 15
 
 detection:
+  # Select detector backends registered in detection.registry.
+  # Options for vehicle: ["auto", "background_subtractor"]
+  # Options for person: ["auto", "hog"]
+  vehicle_backend: "auto"
+  person_backend: "auto"
   vehicle_model_path: "models/vehicle_detector.pt"
   person_model_path: "models/person_detector.pt"
   device: "cpu"
@@ -23,8 +28,12 @@ detection:
 
 tracking:
   max_age: 30
-  # Maximum Euclidean distance between centroids to associate detections
-  distance_threshold: 50.0
+  # Minimum consecutive hits before a track is confirmed.
+  n_init: 3
+  # IoU threshold below which matches are rejected.
+  iou_threshold: 0.3
+  # Appearance cost weight (0 disables colour histogram similarity).
+  appearance_weight: 0.1
 
 recognition:
   anpr_ocr_engine: "easyocr"
@@ -37,6 +46,12 @@ recognition:
   # The demo does not include sample data; populate this dictionary with numpy
   # arrays when enrolling new identities.
   eye_database: {}
+  # Optional path to an .npz file containing embeddings (overrides eye_database).
+  eye_database_path: null
+  # Similarity threshold for accepting a match (0-1).
+  eye_threshold: 0.65
+  # Torch device for periocular recognition.
+  eye_device: "cpu"
 
 storage:
   log_dir: "logs"
@@ -44,6 +59,10 @@ storage:
 dashboard:
   host: "0.0.0.0"
   port: 8501
+
+monitoring:
+  enable_metrics: false
+  metrics_port: 9095
 
 analytics:
   # Speed estimation settings
@@ -90,8 +109,11 @@ analytics:
   # Fight/violence detection settings
   violence:
     enable: false
-    window: 5  # number of frames to consider
-    change_threshold: 1.5  # relative area change to flag as violence
+    window: 16  # frames per clip analysed
+    threshold: 0.55  # probability threshold for violent classes
+    stride: 2  # process every Nth frame for efficiency
+    device: "cpu"
+    keywords: ["fight", "punch", "kick", "boxing", "wrestling"]
   # Weather adaptation settings
   weather:
     enable: false

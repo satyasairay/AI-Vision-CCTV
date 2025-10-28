@@ -25,10 +25,11 @@ from pathlib import Path
 from typing import Dict, Any, List
 
 import cv2
+import time
 
 try:
     from .camera_adapters import RTSPCamera, LocalFileCamera
-    from .detection import VehicleDetector, PersonDetector
+    from .detection import build_detector
     from .tracking import DeepSortTracker
     from .recognition import ANPR, EyeRecognition
     from .rules import RuleEngine
@@ -47,9 +48,10 @@ try:
     from .analytics.iot_integration import IoTController
     from .storage.database_logger import DatabaseEventLogger
     from .storage.audit_logger import AuditLogger
+    from .monitoring import MetricsExporter
 except ImportError:
     from camera_adapters import RTSPCamera, LocalFileCamera
-    from detection import VehicleDetector, PersonDetector
+    from detection import build_detector
     from tracking import DeepSortTracker
     from recognition import ANPR, EyeRecognition
     from rules import RuleEngine
@@ -68,6 +70,7 @@ except ImportError:
     from analytics.iot_integration import IoTController
     from storage.database_logger import DatabaseEventLogger
     from storage.audit_logger import AuditLogger
+    from monitoring import MetricsExporter
 
 
 def load_config(config_path: str) -> dict:
@@ -92,6 +95,7 @@ class CameraPipeline(threading.Thread):
         logger: EventLogger,
         rules_cfg: List[Dict[str, Any]],
         display_enabled: bool = True,
+        metrics: MetricsExporter | None = None,
     ) -> None:
         super().__init__(daemon=True)
         self.cam_id = cam_id
@@ -101,6 +105,7 @@ class CameraPipeline(threading.Thread):
         self.rules_cfg = rules_cfg
         self.stop_event = threading.Event()
         self.display_enabled = display_enabled
+        self.metrics = metrics
 
         # Analytics configuration per camera
         analytics_cfg = global_cfg.get("analytics", {})
@@ -159,9 +164,18 @@ class CameraPipeline(threading.Thread):
         self.violence_enabled = vio_cfg.get("enable", False)
         self.violence_detector: ViolenceDetector | None = None
         if self.violence_enabled:
-            window = vio_cfg.get("window", 5)
-            thr = vio_cfg.get("change_threshold", 1.5)
-            self.violence_detector = ViolenceDetector(window=window, change_threshold=thr)
+            window = vio_cfg.get("window", 16)
+            thr = vio_cfg.get("threshold", 0.55)
+            stride = vio_cfg.get("stride", 2)
+            keywords = vio_cfg.get("keywords")
+            detector_device = vio_cfg.get("device", self.global_cfg.get("detection", {}).get("device", "cpu"))
+            self.violence_detector = ViolenceDetector(
+                window=window,
+                threshold=thr,
+                stride=stride,
+                device=detector_device,
+                violent_keywords=keywords,
+            )
 
         # Weather adaptation
         weather_cfg = analytics_cfg.get("weather", {})
@@ -202,18 +216,41 @@ class CameraPipeline(threading.Thread):
 
         # Build detectors and other components using either camera-specific or global settings
         detection_cfg = self.global_cfg.get("detection", {})
-        vehicle_detector = VehicleDetector(
-            detection_cfg.get("vehicle_model_path"), detection_cfg.get("device", "cpu")
+        detector_device = detection_cfg.get("device", "cpu")
+        vehicle_backend = detection_cfg.get("vehicle_backend", "auto")
+        person_backend = detection_cfg.get("person_backend", "auto")
+        vehicle_detector = build_detector(
+            "vehicle",
+            vehicle_backend,
+            model_path=detection_cfg.get("vehicle_model_path"),
+            device=detector_device,
         )
-        person_detector = PersonDetector(
-            detection_cfg.get("person_model_path"), detection_cfg.get("device", "cpu"), mask_model_path=detection_cfg.get("mask_model_path")
+        person_detector = build_detector(
+            "person",
+            person_backend,
+            model_path=detection_cfg.get("person_model_path"),
+            device=detector_device,
+            mask_model_path=detection_cfg.get("mask_model_path"),
         )
         tracking_cfg = self.global_cfg.get("tracking", {})
-        tracker = DeepSortTracker(tracking_cfg.get("max_age", 30), tracking_cfg.get("distance_threshold", 50.0))
+        tracker = DeepSortTracker(
+            max_age=tracking_cfg.get("max_age", 30),
+            n_init=tracking_cfg.get("n_init", 3),
+            iou_threshold=tracking_cfg.get("iou_threshold", 0.3),
+            appearance_weight=tracking_cfg.get("appearance_weight", 0.1),
+        )
 
         recog_cfg = self.global_cfg.get("recognition", {})
         anpr = ANPR(recog_cfg.get("anpr_ocr_engine"), languages=recog_cfg.get("anpr_languages"))
-        eye_recognition = EyeRecognition(recog_cfg.get("eye_model_path"), database=recog_cfg.get("eye_database"))
+        eye_database = recog_cfg.get("eye_database")
+        if not eye_database:
+            eye_database = recog_cfg.get("eye_database_path")
+        eye_recognition = EyeRecognition(
+            recog_cfg.get("eye_model_path"),
+            database=eye_database,
+            device=recog_cfg.get("eye_device", detector_device),
+            threshold=recog_cfg.get("eye_threshold", 0.65),
+        )
 
         # Rule engine with custom handlers
         rule_engine = RuleEngine(self.rules_cfg)
@@ -276,6 +313,7 @@ class CameraPipeline(threading.Thread):
         latest_frame_path = output_dir / f"latest_frame_{self.cam_id}.jpg"
 
         while not self.stop_event.is_set():
+            frame_start = time.perf_counter()
             # Increment frame index for adaptive skipping
             self.frame_index += 1
             if self.skip_enabled and self.skipper is not None and self.skipper.should_skip(self.frame_index):
@@ -296,7 +334,11 @@ class CameraPipeline(threading.Thread):
 
             # Vehicle detection and tracking
             vehicle_detections = vehicle_detector.detect(frame)
-            tracked_objects = tracker.update([(x1, y1, x2, y2, score) for (x1, y1, x2, y2, score) in vehicle_detections])
+            tracked_objects = tracker.update(
+                [(x1, y1, x2, y2, score) for (x1, y1, x2, y2, score) in vehicle_detections],
+                frame=frame,
+            )
+            active_track_count = len(tracked_objects)
             for obj in tracked_objects:
                 t_id, x1, y1, x2, y2 = obj
                 x1, y1 = max(0, x1), max(0, y1)
@@ -323,7 +365,6 @@ class CameraPipeline(threading.Thread):
                     self.iot.trigger(event)
                 # Speed estimation
                 if self.speed_enabled and self.speed_estimator is not None:
-                    import time
                     now = time.time()
                     spd = self.speed_estimator.update(t_id, (x1, y1, x2, y2), now)
                     if spd is not None:
@@ -334,7 +375,6 @@ class CameraPipeline(threading.Thread):
                             self.iot.trigger(event)
                 # Dwell time monitoring
                 if self.dwell_enabled and self.dwell_monitor is not None:
-                    import time
                     now = time.time()
                     cx = (x1 + x2) / 2.0
                     cy = (y1 + y2) / 2.0
@@ -374,7 +414,7 @@ class CameraPipeline(threading.Thread):
 
             # Person detection
             person_detections = person_detector.detect(frame)
-            for (px1, py1, px2, py2, label, score) in person_detections:
+            for idx, (px1, py1, px2, py2, label, score) in enumerate(person_detections):
                 px1, py1 = max(0, px1), max(0, py1)
                 px2, py2 = min(frame.shape[1], px2), min(frame.shape[0], py2)
                 person_img = frame[py1:py2, px1:px2]
@@ -398,7 +438,10 @@ class CameraPipeline(threading.Thread):
                     self.iot.trigger(event)
                 # Violence detection
                 if self.violence_enabled and self.violence_detector is not None:
-                    if self.violence_detector.update(track_id=0, bbox=(px1, py1, px2, py2)):
+                    center_x = (px1 + px2) // 2
+                    center_y = (py1 + py2) // 2
+                    track_hash = hash((center_x // 10, center_y // 10, idx % 4))
+                    if self.violence_detector.update(frame, (px1, py1, px2, py2), track_hash):
                         events_vio = rule_engine.evaluate({"violence": True})
                         for event in events_vio:
                             self.logger.log(event)
@@ -432,6 +475,15 @@ class CameraPipeline(threading.Thread):
                 has_activity = bool(vehicle_detections) or bool(person_detections)
                 self.skipper.update(self.frame_index, has_activity)
 
+            if self.metrics is not None:
+                self.metrics.record_frame(
+                    self.cam_id,
+                    time.perf_counter() - frame_start,
+                    len(vehicle_detections),
+                    len(person_detections),
+                    active_track_count,
+                )
+
             # Save latest frame
             try:
                 cv2.imwrite(str(latest_frame_path), frame)
@@ -451,11 +503,23 @@ def main() -> None:
         action="store_true",
         help="Disable OpenCV UI windows (useful on headless environments).",
     )
+    parser.add_argument(
+        "--metrics-port",
+        type=int,
+        default=None,
+        help="Expose Prometheus metrics on this port (overrides config).",
+    )
     args = parser.parse_args()
 
     config = load_config(args.config)
     global_cfg = config
     display_enabled = not args.no_display
+    monitoring_cfg = config.get("monitoring", {})
+    metrics_port = args.metrics_port if args.metrics_port is not None else monitoring_cfg.get("metrics_port")
+    metrics_enabled = monitoring_cfg.get("enable_metrics", False) or metrics_port is not None
+    metrics_exporter: MetricsExporter | None = None
+    if metrics_enabled:
+        metrics_exporter = MetricsExporter(port=metrics_port or 9095)
     # Determine camera configurations: either a single camera or a list of cameras
     cam_list: List[Dict[str, Any]] = []
     if "cameras" in config:
@@ -482,7 +546,15 @@ def main() -> None:
     threads: List[CameraPipeline] = []
     for idx, cam_cfg in enumerate(cam_list):
         cam_id = cam_cfg.get("id", f"cam{idx}")
-        thread = CameraPipeline(cam_id, cam_cfg, global_cfg, logger, rules_cfg, display_enabled=display_enabled)
+        thread = CameraPipeline(
+            cam_id,
+            cam_cfg,
+            global_cfg,
+            logger,
+            rules_cfg,
+            display_enabled=display_enabled,
+            metrics=metrics_exporter,
+        )
         thread.start()
         threads.append(thread)
 

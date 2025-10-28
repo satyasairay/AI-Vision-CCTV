@@ -18,6 +18,8 @@ from typing import List, Tuple
 import numpy as np
 import cv2
 
+from .registry import register_detector
+
 
 class VehicleDetector:
     """Detect vehicles in an image frame."""
@@ -127,3 +129,16 @@ class VehicleDetector:
             x1, y1, x2, y2 = x, y, x + w, y + h
             detections.append((x1, y1, x2, y2, 1.0))
         return detections
+
+
+@register_detector("vehicle", "auto")
+def _build_vehicle_detector(**kwargs):
+    return VehicleDetector(
+        model_path=kwargs.get("model_path"),
+        device=kwargs.get("device", "cpu"),
+    )
+
+
+@register_detector("vehicle", "background_subtractor")
+def _build_bg_vehicle_detector(**kwargs):
+    return VehicleDetector(model_path=None, device=kwargs.get("device", "cpu"))

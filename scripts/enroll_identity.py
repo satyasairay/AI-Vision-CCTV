@@ -1,85 +1,89 @@
 #!/usr/bin/env python
-"""Enroll a new identity for eye recognition.
+"""Enroll a new identity for periocular (eye-region) recognition.
 
-This utility script adds a new person's periocular feature vector to the
-`eye_database` field in the YAML configuration. The feature is computed
-using the same simple extraction method as in `EyeRecognition.identify`: the
-cropped eye image is converted to grayscale, resized to 64×64, flattened,
-and normalized. The resulting list of floats is stored in the config.
-
-Usage::
-
-    python -m road_security.scripts.enroll_identity --config configs/default.yaml \
-        --identity "Alice" --image /path/to/alice_eye.jpg
-
-After running this script, restart the pipeline to load the updated
-database.
+Embeddings are generated with the same MobileNetV2 backbone used in
+runtime inference to ensure consistent similarity scores. Embeddings can
+be stored directly inside the YAML configuration or persisted to an
+external `.npz` file referenced from the config.
 """
 
 from __future__ import annotations
 
 import argparse
-import yaml
 from pathlib import Path
-from typing import List
+from typing import Dict
 
 import numpy as np
+import yaml
+
+from recognition.eye_recognition import EyeRecognition
 
 
-def extract_feature(image_path: str) -> List[float]:
-    """Extract a normalized feature vector from an eye image.
-
-    Parameters
-    ----------
-    image_path : str
-        Path to the eye region image file.
-
-    Returns
-    -------
-    feature : list of float
-        The normalized feature vector as a Python list.
-    """
-    import cv2
-
-    img = cv2.imread(image_path)
-    if img is None:
-        raise FileNotFoundError(f"Could not read image: {image_path}")
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    resized = cv2.resize(gray, (64, 64))
-    vec = resized.flatten().astype("float32")
-    norm = np.linalg.norm(vec)
-    if norm > 0:
-        vec = vec / norm
-    return vec.tolist()
+def _save_npz(path: Path, database: Dict[str, np.ndarray]) -> None:
+    arrays = {key: np.asarray(vec, dtype=np.float32) for key, vec in database.items()}
+    np.savez(path, **arrays)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Enroll a new identity for eye recognition.")
+    parser = argparse.ArgumentParser(description="Enroll a new identity for periocular recognition.")
     parser.add_argument("--config", type=str, default="configs/default.yaml", help="Path to YAML config file")
     parser.add_argument("--identity", type=str, required=True, help="Name of the identity to enroll")
-    parser.add_argument("--image", type=str, required=True, help="Path to the eye region image")
+    parser.add_argument("--image", type=str, required=True, help="Path to the cropped eye-region image")
+    parser.add_argument(
+        "--database-path",
+        type=str,
+        help="Override output .npz path for embeddings (also updates config eye_database_path)",
+    )
     args = parser.parse_args()
 
     config_path = Path(args.config)
     if not config_path.exists():
         raise FileNotFoundError(f"Config file not found: {config_path}")
 
-    # Extract feature vector from the provided image
-    feature = extract_feature(args.image)
-
-    # Load and update the configuration
     with config_path.open("r") as f:
-        config = yaml.safe_load(f)
-    recog_cfg = config.get("recognition", {})
-    eye_db = recog_cfg.get("eye_database", {}) or {}
-    # Assign the feature vector to the identity
-    eye_db[args.identity] = feature
-    recog_cfg["eye_database"] = eye_db
-    config["recognition"] = recog_cfg
+        config = yaml.safe_load(f) or {}
 
+    recog_cfg = config.get("recognition", {})
+    existing_db = recog_cfg.get("eye_database", {}) or {}
+    db_path = args.database_path or recog_cfg.get("eye_database_path")
+    device = recog_cfg.get("eye_device", "cpu")
+    threshold = recog_cfg.get("eye_threshold", 0.65)
+
+    recogniser = EyeRecognition(
+        model_path=recog_cfg.get("eye_model_path"),
+        database=db_path or existing_db,
+        device=device,
+        threshold=threshold,
+    )
+
+    import cv2
+
+    img = cv2.imread(args.image)
+    if img is None:
+        raise FileNotFoundError(f"Could not read image: {args.image}")
+    embedding = recogniser.embed(img)
+    if embedding is None:
+        raise RuntimeError("Failed to compute embedding from provided image.")
+    recogniser.enroll(args.identity, embedding)
+
+    if db_path:
+        out_path = Path(db_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        _save_npz(out_path, recogniser.database)
+        recog_cfg["eye_database_path"] = str(out_path)
+        recog_cfg["eye_database"] = {}
+        print(f"Saved embeddings to {out_path}")
+    else:
+        recog_cfg["eye_database"] = {
+            identity: vec.tolist() for identity, vec in recogniser.database.items()
+        }
+        recog_cfg["eye_database_path"] = None
+        print(f"Stored embeddings in config for identities: {list(recogniser.database.keys())}")
+
+    config["recognition"] = recog_cfg
     with config_path.open("w") as f:
         yaml.safe_dump(config, f)
-    print(f"Enrolled identity '{args.identity}' with feature vector of length {len(feature)} into {config_path}")
+    print(f"Enrolled identity '{args.identity}' using image {args.image}")
 
 
 if __name__ == "__main__":

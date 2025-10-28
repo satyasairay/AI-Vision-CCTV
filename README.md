@@ -2,10 +2,10 @@
 
 This project implements a **modular road‑security platform** designed to run entirely on local infrastructure. It integrates CCTV video streams for the following tasks:
 
-* **Moving‑vehicle detection & tracking** – detect moving objects in each frame using either a lightweight background‑subtraction approach **or**, when local weights are provided, a **YOLO‑based detector** for higher accuracy. Vehicles are tracked across frames using a centroid‑based tracker.
+* **Moving-vehicle detection & tracking** – detect moving objects in each frame using either a lightweight background-subtraction approach **or**, when local weights are provided, a **YOLO-based detector** for higher accuracy. Vehicles are tracked across frames with a Kalman/Hungarian multi-object tracker that combines motion and colour appearance cues.
 * **License‑plate recognition (ANPR)** – extract and recognize license plates from detected vehicles.
-* **Masked‑person & periocular/eye recognition** – detect people using a HOG‑based detector (or an optional YOLO model), classify mask usage with a lightweight CNN (if weights are available), and identify individuals using only the eye region. Identities are stored in a local `eye_database` and can be enrolled via a provided script.
-* **Event logging & dashboard visualization** – log detection events with metadata and display them through a local dashboard.
+* **Masked-person & periocular/eye recognition** – detect people using a HOG-based detector (or an optional YOLO model), classify mask usage with a lightweight CNN (if weights are available), and identify individuals using only the eye region. MobileNet-based embeddings keep identities in a local `eye_database` or external `.npz`, and can be enrolled via the provided script.
+* **Event logging, metrics & dashboard visualization** – log detection events with metadata, expose Prometheus metrics, and display insights through a local dashboard and calibration wizard.
 
 The system is designed to be **fully local** with no external cloud dependencies. All computation happens on devices you control, and models are loaded from local files. Configuration allows for adapting to different camera specifications (resolution, FPS, GPU availability, NIR support) and enabling or disabling advanced analytics. A wide range of security features are implemented via modular components (see **Features** below). You can turn each analytic on or off in `configs/default.yaml`.
 
@@ -20,16 +20,16 @@ The platform supports a variety of surveillance features, each implemented in it
 | Feature | Description | Implementation |
 |---------|-------------|---------------|
 | **Vehicle & Person Detection** | Uses background subtraction or YOLO for vehicles (`detection/vehicle_detector.py`), HOG or YOLO for persons (`detection/person_detector.py`). Automatically switches based on model availability and hardware via `ModelSwitcher` (`analytics/model_switcher.py`). | `detection/vehicle_detector.py`, `detection/person_detector.py` |
-| **Tracking** | Associates detections across frames using a centroid‑based tracker (`tracking/deep_sort.py`). | `tracking/deep_sort.py` |
+| **Tracking** | Associates detections across frames using a Kalman/Hungarian tracker with colour appearance cues (`tracking/deep_sort.py`). | `tracking/deep_sort.py` |
 | **License Plate Recognition (ANPR)** | Recognizes number plates via EasyOCR with support for multiple languages (`recognition/anpr.py`). | `recognition/anpr.py` |
-| **Eye/Periocular Recognition** | Identifies masked persons based on eye region embeddings; enroll new identities with `scripts/enroll_identity.py`. | `recognition/eye_recognition.py`, `scripts/enroll_identity.py` |
+| **Eye/Periocular Recognition** | Identifies masked persons with MobileNet-based eye embeddings; enroll identities with `scripts/enroll_identity.py`. | `recognition/eye_recognition.py`, `scripts/enroll_identity.py` |
 | **Speed Estimation & Over‑Speed Alerts** | Calculates object speed from centroid trajectories and triggers events above a configurable limit. | `analytics/speed_estimator.py` |
 | **Wrong‑Way Detection** | Flags vehicles moving against an expected direction vector. | `analytics/wrong_way.py` |
 | **Loitering/Dwell Time** | Monitors how long objects remain in a zone; alerts if above threshold. | `analytics/dwell_time.py` |
 | **Duplicate Plate Detection** | Detects repeated license plates within a time window. | `analytics/duplicate_plate.py` |
 | **Crowd Density** | Counts persons in a region and flags overcrowding. | `analytics/crowd_density.py` |
 | **Stop‑Line/Red‑Light Violations** | Triggers when vehicles cross a defined line while a red‑light flag is set. | `analytics/stop_line_violation.py` |
-| **Violence/Fight Detection** | Heuristic detection of aggressive movements based on bounding‑box area changes. | `analytics/fight_detection.py` |
+| **Violence/Fight Detection** | 3D CNN (R3D-18) classification over short clips cropped around persons; tune thresholds per camera. | `analytics/fight_detection.py` |
 | **Weather & Lighting Adaptation** | Applies gamma correction to dark frames. | `analytics/weather_adapter.py` |
 | **Adaptive Frame Skipping** | Skips frames during idle periods to save resources. | `analytics/adaptive_frame_skipper.py` |
 | **Privacy Redaction & No‑Record Zones** | Blurs detections not on watchlists and excludes designated zones. | `analytics/privacy.py` |
@@ -37,7 +37,9 @@ The platform supports a variety of surveillance features, each implemented in it
 | **Audit Logging** | Records administrative actions (e.g., watchlist changes) for compliance. | `storage/audit_logger.py` |
 | **SQLite Event Storage** | Persists events in a structured database instead of JSON lines. | `storage/database_logger.py` |
 | **Camera Health Monitoring** | Checks if camera feeds are alive. | `analytics/camera_health.py` |
-| **Cross‑Camera Re‑Identification** | Prototype colour‑histogram matching across cameras. | `recognition/reid.py` |
+| **Cross-Camera Re-Identification** | Prototype colour-histogram matching across cameras. | `recognition/reid.py` |
+| **Prometheus Metrics** | Exposes frame latency, detection counts, and track statistics for observability. | `monitoring/metrics.py` |
+| **Calibration Wizard** | Streamlit UI to draw dwell zones, stop lines, and privacy regions. | `tools/calibration_app.py` |
 
 Each analytic has a corresponding handler in the rule engine. To activate a feature, set its `enable` flag to `true` in the configuration and adjust its parameters (e.g., zones, thresholds). See **Configuration Guide** below for details.
 
@@ -56,6 +58,7 @@ The code is organized into modular packages:
 | `dashboard/`       | A local Streamlit/FastAPI application for visualizing detection events and camera feeds.      |
 | `configs/`         | YAML/JSON files containing configurable parameters.                                           |
 | `scripts/`         | Setup scripts (e.g., `setup.sh`, `run_demo.sh`) for installing dependencies and running demos. |
+| `tools/`           | Auxiliary tooling such as the Streamlit calibration wizard.                                   |
 | `tests/`           | Unit tests covering the core functionality.                                                   |
 | `sample_data/`     | Sample CCTV video and test images for development and demonstration.                          |
 

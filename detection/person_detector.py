@@ -13,6 +13,8 @@ from typing import List, Tuple
 
 import numpy as np
 
+from .registry import register_detector
+
 
 class PersonDetector:
     """Detect persons and (optionally) mask status in an image frame.
@@ -92,3 +94,13 @@ class PersonDetector:
             # In case OpenCV is not installed, return no detections
             pass
         return detections
+
+
+@register_detector("person", "auto")
+@register_detector("person", "hog")
+def _build_person_detector(**kwargs):
+    return PersonDetector(
+        model_path=kwargs.get("model_path"),
+        device=kwargs.get("device", "cpu"),
+        mask_model_path=kwargs.get("mask_model_path"),
+    )
