@@ -32,6 +32,7 @@ Total Phase 1 duration: ~6–8 weeks (parallelizable with 3 engineers).
   - Track IDs remain stable across occlusions in test footage.
   - Unit tests covering track creation, update, deletion.
   - Config documentation updated (`HOWTO.md`, `configs/default.yaml` comments).
+> **Status (Oct 2025):** Completed with configurable colour/ReID appearance extractors, new tracking tests, and updated documentation.
 
 ### Milestone 2: Detector Abstraction Layer (Week 2–3)
 - **Tasks**

@@ -20,7 +20,7 @@ The platform supports a variety of surveillance features, each implemented in it
 | Feature | Description | Implementation |
 |---------|-------------|---------------|
 | **Vehicle & Person Detection** | Uses background subtraction or YOLO for vehicles (`detection/vehicle_detector.py`), HOG or YOLO for persons (`detection/person_detector.py`). Automatically switches based on model availability and hardware via `ModelSwitcher` (`analytics/model_switcher.py`). | `detection/vehicle_detector.py`, `detection/person_detector.py` |
-| **Tracking** | Associates detections across frames using a Kalman/Hungarian tracker with colour appearance cues (`tracking/deep_sort.py`). | `tracking/deep_sort.py` |
+| **Tracking** | Associates detections across frames using a Kalman/Hungarian tracker with configurable appearance embeddings (colour histograms or ResNet) (`tracking/deep_sort.py`, `tracking/appearance.py`). | `tracking/deep_sort.py` |
 | **License Plate Recognition (ANPR)** | Recognizes number plates via EasyOCR with support for multiple languages (`recognition/anpr.py`). | `recognition/anpr.py` |
 | **Eye/Periocular Recognition** | Identifies masked persons with MobileNet-based eye embeddings; enroll identities with `scripts/enroll_identity.py`. | `recognition/eye_recognition.py`, `scripts/enroll_identity.py` |
 | **Speed Estimation & Over‑Speed Alerts** | Calculates object speed from centroid trajectories and triggers events above a configurable limit. | `analytics/speed_estimator.py` |
@@ -36,7 +36,7 @@ The platform supports a variety of surveillance features, each implemented in it
 | **IoT Integration** | Sends events to external devices or logs for automation. | `analytics/iot_integration.py` |
 | **Audit Logging** | Records administrative actions (e.g., watchlist changes) for compliance. | `storage/audit_logger.py` |
 | **SQLite Event Storage** | Persists events in a structured database instead of JSON lines. | `storage/database_logger.py` |
-| **Camera Health Monitoring** | Checks if camera feeds are alive. | `analytics/camera_health.py` |
+| **Camera Health Monitoring** | Emits `camera_down`/`camera_recovered` events and updates Prometheus gauges when feeds stall. | `analytics/camera_health.py` |
 | **Cross-Camera Re-Identification** | Prototype colour-histogram matching across cameras. | `recognition/reid.py` |
 | **Prometheus Metrics** | Exposes frame latency, detection counts, and track statistics for observability. | `monitoring/metrics.py` |
 | **Calibration Wizard** | Streamlit UI to draw dwell zones, stop lines, and privacy regions. | `tools/calibration_app.py` |
@@ -146,9 +146,10 @@ The YAML file `configs/default.yaml` contains all tunable settings. Key sections
 
 * **camera / cameras** – Specify one or more sources (RTSP URL or file path). Per‑camera overrides can be defined under each entry.
 * **detection** – Paths to vehicle and person detectors, inference device (cpu/cuda/auto), and optional mask classifier. The system automatically selects heavy or light models based on GPU availability.
-* **tracking** – `max_age` controls how long a track is kept without detections; `distance_threshold` controls association sensitivity.
+* **tracking** – `max_age` controls how long a track is kept without detections; `n_init` controls confirmation speed; `appearance.mode` selects colour histograms or deep ReID embeddings (see the `tracking.appearance` block for model path/device/embedding size).
 * **recognition** – `anpr_ocr_engine` (currently `easyocr`), `anpr_languages` list for multi‑language plate recognition, path to the eye recognition model, and the `eye_database` mapping identities to feature vectors.
 * **storage_backend** – `jsonl` (default) writes events to `logs/events.jsonl` and associated images to JPEG files. `sqlite` writes to a SQLite database (`database.db`) with optional image directory. Both backends can be used simultaneously if desired.
+* **monitoring** – Toggle Prometheus instrumentation via `enable_metrics` and set `metrics_port` when exposing telemetry to a Prometheus/Grafana stack.
 * **analytics** – Nested settings for each analytic. Set `enable: true` to activate an analytic and configure its parameters (e.g., zones, thresholds, direction vectors, idle thresholds). See the inline comments in the file for examples.
 * **routing_rules** – A list of rule objects. Each rule has a `type` field (matching a handler) and additional parameters (e.g., `watchlist`, `threshold`). Rules are evaluated in sequence for each detection context. Custom rules can be added via the dashboard.
 
@@ -157,6 +158,27 @@ The YAML file `configs/default.yaml` contains all tunable settings. Key sections
 Detection events are logged with timestamps and contextual data (e.g., license plate text, speed, track ID) either to a JSONL file (`logs/events.jsonl`) or a SQLite database (`events.db`). Associated images are saved alongside if provided. Administrative actions (like adding watchlist entries or rules) are recorded in `logs/audit.jsonl` via the `AuditLogger`.
 
 Event logs can be parsed with helper functions in `analytics/event_stats.py`. For example, use `event_counts_by_type()` to generate bar charts of event frequencies.
+
+## Testing & Validation
+
+Keep tests green before committing:
+
+```powershell
+python -m pytest
+```
+
+Quick smoke tests:
+
+```powershell
+.\.venv\Scripts\python.exe run_pipeline.py --config configs/default.yaml --no-display --max-frames 200
+.\.venv\Scripts\python.exe run_multi_pipeline.py --config configs/default.yaml --no-display
+```
+
+Key targeted suites:
+- `python -m pytest tests/test_tracker.py`
+- `python -m pytest tests/test_camera_health.py`
+
+Enable Prometheus metrics (`monitoring.enable_metrics: true`) to scrape processing latency, detection counts, and active tracks.
 
 ## Extending the Platform
 

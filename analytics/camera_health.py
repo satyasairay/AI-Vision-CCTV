@@ -9,7 +9,7 @@ dashboard) to alert operators to hardware issues.
 from __future__ import annotations
 
 import time
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 
 class CameraHealthMonitor:
@@ -25,20 +25,50 @@ class CameraHealthMonitor:
     def __init__(self, timeout: float = 10.0) -> None:
         self.timeout = timeout
         self.last_seen: Dict[str, float] = {}
+        self.status: Dict[str, bool] = {}
 
-    def update(self, camera_id: str) -> None:
+    def register(self, camera_id: str) -> None:
+        """Initialise monitoring state for a camera."""
+        now = time.time()
+        self.last_seen.setdefault(camera_id, now)
+        self.status.setdefault(camera_id, True)
+
+    def update(self, camera_id: str, timestamp: Optional[float] = None) -> None:
         """Record that a frame has been received from a camera."""
-        self.last_seen[camera_id] = time.time()
+        self.last_seen[camera_id] = timestamp or time.time()
 
     def is_down(self, camera_id: str) -> bool:
         """Return True if the camera has not sent a frame within timeout."""
         last = self.last_seen.get(camera_id)
         if last is None:
-            # No record yet, treat as down until first frame
             return True
         return (time.time() - last) > self.timeout
+
+    def evaluate(self, camera_id: str) -> Tuple[bool, bool]:
+        """Return (healthy, changed) for the given camera."""
+        healthy = not self.is_down(camera_id)
+        prev = self.status.get(camera_id)
+        changed = prev is not None and prev != healthy
+        self.status[camera_id] = healthy
+        return healthy, changed
+
+    def force_down(self, camera_id: str) -> Tuple[bool, bool]:
+        """Mark a camera as down and return (healthy, changed)."""
+        prev = self.status.get(camera_id, True)
+        self.status[camera_id] = False
+        return False, bool(prev)
+
+    def get_status(self, camera_id: str) -> bool:
+        """Return True if the camera is currently healthy."""
+        return self.status.get(camera_id, False)
 
     def get_down_cameras(self) -> list[str]:
         """Return a list of camera IDs that are currently down."""
         now = time.time()
-        return [cid for cid, t_last in self.last_seen.items() if (now - t_last) > self.timeout]
+        result = []
+        for cid, last in self.last_seen.items():
+            healthy = (now - last) <= self.timeout
+            self.status[cid] = healthy
+            if not healthy:
+                result.append(cid)
+        return result

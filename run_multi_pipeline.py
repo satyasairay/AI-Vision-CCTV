@@ -23,6 +23,7 @@ import threading
 import yaml
 from pathlib import Path
 from typing import Dict, Any, List
+import warnings
 
 import cv2
 import time
@@ -31,6 +32,7 @@ try:
     from .camera_adapters import RTSPCamera, LocalFileCamera
     from .detection import build_detector
     from .tracking import DeepSortTracker
+    from .tracking.appearance import ColorHistogramExtractor, TorchReIDExtractor
     from .recognition import ANPR, EyeRecognition
     from .rules import RuleEngine
     from .storage import EventLogger
@@ -53,6 +55,7 @@ except ImportError:
     from camera_adapters import RTSPCamera, LocalFileCamera
     from detection import build_detector
     from tracking import DeepSortTracker
+    from tracking.appearance import ColorHistogramExtractor, TorchReIDExtractor
     from recognition import ANPR, EyeRecognition
     from rules import RuleEngine
     from storage import EventLogger
@@ -150,7 +153,12 @@ class CameraPipeline(threading.Thread):
             thr_c = crowd_cfg.get("threshold", 10)
             self.crowd_monitor = CrowdDensityMonitor(tuple(cz), thr_c)
 
-        # Stop‑line violation detection per camera
+        health_cfg = analytics_cfg.get("camera_health", {})
+        self.health_enabled = health_cfg.get("enable", False)
+        self.health_timeout = health_cfg.get("timeout", 10.0)
+        self.health_id = health_cfg.get("camera_id", self.cam_id)
+
+        # Stop-line violation detection per camera
         stop_cfg = analytics_cfg.get("stop_line", {})
         self.stop_enabled = stop_cfg.get("enable", False)
         self.stop_detector: StopLineViolationDetector | None = None
@@ -213,6 +221,10 @@ class CameraPipeline(threading.Thread):
         source = self.camera_cfg.get("source")
         camera = create_camera(source)
         camera.open()
+        health_monitor: CameraHealthMonitor | None = None
+        if self.health_enabled:
+            health_monitor = CameraHealthMonitor(timeout=self.health_timeout)
+            health_monitor.register(self.health_id)
 
         # Build detectors and other components using either camera-specific or global settings
         detection_cfg = self.global_cfg.get("detection", {})
@@ -233,11 +245,25 @@ class CameraPipeline(threading.Thread):
             mask_model_path=detection_cfg.get("mask_model_path"),
         )
         tracking_cfg = self.global_cfg.get("tracking", {})
+        appearance_cfg = tracking_cfg.get("appearance", {})
+        appearance_mode = (appearance_cfg.get("mode") or "color").lower()
+        extractor = ColorHistogramExtractor()
+        if appearance_mode == "reid":
+            try:
+                extractor = TorchReIDExtractor(
+                    model_path=appearance_cfg.get("model_path"),
+                    device=appearance_cfg.get("device", detector_device),
+                    embedding_dim=appearance_cfg.get("embedding_dim", 512),
+                )
+            except Exception as exc:
+                warnings.warn(f"[{self.cam_id}] ReID extractor fallback to color histograms ({exc}).", stacklevel=2)
+                extractor = ColorHistogramExtractor()
         tracker = DeepSortTracker(
             max_age=tracking_cfg.get("max_age", 30),
             n_init=tracking_cfg.get("n_init", 3),
             iou_threshold=tracking_cfg.get("iou_threshold", 0.3),
             appearance_weight=tracking_cfg.get("appearance_weight", 0.1),
+            feature_extractor=extractor,
         )
 
         recog_cfg = self.global_cfg.get("recognition", {})
@@ -307,6 +333,38 @@ class CameraPipeline(threading.Thread):
                 return context.get("violence") is True
             rule_engine.register_handler("violence", violence_handler)
 
+        def emit_camera_health_event(_: bool) -> None:
+            return
+
+        if self.health_enabled and health_monitor is not None:
+            def camera_down_handler(context: dict) -> bool:
+                return context.get("camera_down") is True
+
+            def camera_recovered_handler(context: dict) -> bool:
+                return context.get("camera_recovered") is True
+
+            rule_engine.register_handler("camera_down", camera_down_handler)
+            rule_engine.register_handler("camera_recovered", camera_recovered_handler)
+
+            def emit_camera_health_event(is_healthy: bool) -> None:
+                context_health = {"camera_id": self.health_id}
+                if is_healthy:
+                    context_health["camera_recovered"] = True
+                else:
+                    context_health["camera_down"] = True
+                events_health = rule_engine.evaluate(context_health)
+                for event in events_health:
+                    self.logger.log(event)
+                    self.iot.trigger(event)
+
+        def process_health_status(healthy: bool, changed: bool) -> None:
+            if not (self.health_enabled and health_monitor is not None):
+                return
+            if self.metrics is not None:
+                self.metrics.record_camera_health(self.health_id, healthy)
+            if changed:
+                emit_camera_health_event(healthy)
+
         # Save the last processed frame to disk for dashboard streaming
         output_dir = Path(self.global_cfg.get("storage", {}).get("log_dir", "logs"))
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -316,15 +374,32 @@ class CameraPipeline(threading.Thread):
             frame_start = time.perf_counter()
             # Increment frame index for adaptive skipping
             self.frame_index += 1
+            if self.health_enabled and health_monitor is not None:
+                healthy, changed = health_monitor.evaluate(self.health_id)
+                process_health_status(healthy, changed)
             if self.skip_enabled and self.skipper is not None and self.skipper.should_skip(self.frame_index):
                 # Skip frame processing but still read from camera
                 ret, _ = camera.read()
+                if self.health_enabled and health_monitor is not None and ret:
+                    health_monitor.update(self.health_id)
+                    healthy, changed = health_monitor.evaluate(self.health_id)
+                    process_health_status(healthy, changed)
                 if not ret:
+                    if self.health_enabled and health_monitor is not None:
+                        healthy, changed = health_monitor.force_down(self.health_id)
+                        process_health_status(healthy, changed)
                     break
                 continue
             ret, frame = camera.read()
             if not ret:
+                if self.health_enabled and health_monitor is not None:
+                    healthy, changed = health_monitor.force_down(self.health_id)
+                    process_health_status(healthy, changed)
                 break
+            if self.health_enabled and health_monitor is not None:
+                health_monitor.update(self.health_id)
+                healthy, changed = health_monitor.evaluate(self.health_id)
+                process_health_status(healthy, changed)
             # Weather adaptation
             if self.weather_enabled and self.weather_adapter is not None:
                 frame = self.weather_adapter.preprocess(frame)

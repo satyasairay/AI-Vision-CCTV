@@ -41,6 +41,11 @@ class MetricsExporter:
             "Number of active vehicle tracks",
             ["camera"],
         )
+        self.camera_health = Gauge(
+            "aivision_camera_health_status",
+            "Camera health status (1=healthy, 0=down)",
+            ["camera"],
+        )
         self.errors = Counter(
             "aivision_pipeline_errors_total",
             "Count of runtime errors by type",
@@ -64,3 +69,6 @@ class MetricsExporter:
 
     def record_error(self, camera_id: str, category: str) -> None:
         self.errors.labels(camera_id, category).inc()
+
+    def record_camera_health(self, camera_id: str, healthy: bool) -> None:
+        self.camera_health.labels(camera_id).set(1 if healthy else 0)

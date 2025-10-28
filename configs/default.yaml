@@ -34,6 +34,11 @@ tracking:
   iou_threshold: 0.3
   # Appearance cost weight (0 disables colour histogram similarity).
   appearance_weight: 0.1
+  appearance:
+    mode: "color"  # "color" or "reid"
+    model_path: null
+    device: "cpu"
+    embedding_dim: 512
 
 recognition:
   anpr_ocr_engine: "easyocr"
@@ -128,6 +133,7 @@ analytics:
   camera_health:
     enable: false
     timeout: 10.0  # seconds
+    camera_id: "main"
   # Privacy and opt‑out settings
   privacy:
     enable: false

@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import yaml
 from pathlib import Path
+import warnings
 
 import cv2
 import time
@@ -25,6 +26,7 @@ try:
     from .camera_adapters import RTSPCamera, LocalFileCamera
     from .detection import build_detector
     from .tracking import DeepSortTracker
+    from .tracking.appearance import ColorHistogramExtractor, TorchReIDExtractor
     from .recognition import ANPR, EyeRecognition
     from .rules import RuleEngine
     from .storage import EventLogger
@@ -49,6 +51,7 @@ except ImportError:
     from camera_adapters import RTSPCamera, LocalFileCamera
     from detection import build_detector
     from tracking import DeepSortTracker
+    from tracking.appearance import ColorHistogramExtractor, TorchReIDExtractor
     from recognition import ANPR, EyeRecognition
     from rules import RuleEngine
     from storage import EventLogger
@@ -145,11 +148,25 @@ def main() -> None:
 
     tracking_cfg = config.get("tracking", {})
     max_age = tracking_cfg.get("max_age", 30)
+    appearance_cfg = tracking_cfg.get("appearance", {})
+    appearance_mode = (appearance_cfg.get("mode") or "color").lower()
+    extractor = ColorHistogramExtractor()
+    if appearance_mode == "reid":
+        try:
+            extractor = TorchReIDExtractor(
+                model_path=appearance_cfg.get("model_path"),
+                device=appearance_cfg.get("device", detector_device),
+                embedding_dim=appearance_cfg.get("embedding_dim", 512),
+            )
+        except Exception as exc:
+            warnings.warn(f"Falling back to color histograms for appearance features ({exc}).", stacklevel=2)
+            extractor = ColorHistogramExtractor()
     tracker = DeepSortTracker(
         max_age=max_age,
         n_init=tracking_cfg.get("n_init", 3),
         iou_threshold=tracking_cfg.get("iou_threshold", 0.3),
         appearance_weight=tracking_cfg.get("appearance_weight", 0.1),
+        feature_extractor=extractor,
     )
 
     recognition_cfg = config.get("recognition", {})
@@ -211,6 +228,46 @@ def main() -> None:
 
     # Analytics: speed estimation and dwell time
     analytics_cfg = config.get("analytics", {})
+    health_cfg = analytics_cfg.get("camera_health", {})
+    camera_health_enabled = health_cfg.get("enable", False)
+    camera_health_id = health_cfg.get("camera_id", "main")
+    health_monitor: CameraHealthMonitor | None = None
+    if camera_health_enabled:
+        health_monitor = CameraHealthMonitor(timeout=health_cfg.get("timeout", 10.0))
+        health_monitor.register(camera_health_id)
+
+    def emit_camera_health_event(_: bool) -> None:
+        return
+
+    if camera_health_enabled and health_monitor is not None:
+        def camera_down_handler(context: dict) -> bool:
+            return context.get("camera_down") is True
+
+        def camera_recovered_handler(context: dict) -> bool:
+            return context.get("camera_recovered") is True
+
+        rule_engine.register_handler("camera_down", camera_down_handler)
+        rule_engine.register_handler("camera_recovered", camera_recovered_handler)
+
+        def emit_camera_health_event(is_healthy: bool) -> None:
+            context_health = {"camera_id": camera_health_id}
+            if is_healthy:
+                context_health["camera_recovered"] = True
+            else:
+                context_health["camera_down"] = True
+            events_health = rule_engine.evaluate(context_health)
+            for event in events_health:
+                logger.log(event)
+                iot.trigger(event)
+
+    def process_health_status(healthy: bool, changed: bool) -> None:
+        if not camera_health_enabled:
+            return
+        if metrics is not None:
+            metrics.record_camera_health(camera_health_id, healthy)
+        if changed:
+            emit_camera_health_event(healthy)
+
     speed_cfg = analytics_cfg.get("speed", {})
     speed_enabled = speed_cfg.get("enable", False)
     speed_estimator: SpeedEstimator | None = None
@@ -354,16 +411,34 @@ def main() -> None:
             frame_start = time.perf_counter()
             # Increment frame index and apply adaptive skipping
             frame_index += 1
+            if camera_health_enabled and health_monitor is not None:
+                healthy, changed = health_monitor.evaluate(camera_health_id)
+                process_health_status(healthy, changed)
             if skip_enabled and skipper is not None and skipper.should_skip(frame_index):
                 # Skip processing this frame but still read from camera
                 ret, _ = camera.read()
+                if camera_health_enabled and health_monitor is not None and ret:
+                    health_monitor.update(camera_health_id)
+                    healthy, changed = health_monitor.evaluate(camera_health_id)
+                    process_health_status(healthy, changed)
                 if not ret:
+                    if camera_health_enabled and health_monitor is not None:
+                        healthy, changed = health_monitor.force_down(camera_health_id)
+                        process_health_status(healthy, changed)
                     break
                 continue
 
             ret, frame = camera.read()
             if not ret:
+                if camera_health_enabled and health_monitor is not None:
+                    healthy, changed = health_monitor.force_down(camera_health_id)
+                    process_health_status(healthy, changed)
                 break
+
+            if camera_health_enabled and health_monitor is not None:
+                health_monitor.update(camera_health_id)
+                healthy, changed = health_monitor.evaluate(camera_health_id)
+                process_health_status(healthy, changed)
 
             # Apply weather adaptation preprocessing if enabled
             if weather_enabled and weather_adapter is not None:

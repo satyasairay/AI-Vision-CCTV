@@ -85,7 +85,7 @@ This guide walks you through every major feature in the project, the current imp
 | **Analytics: Weather Adapter** | `analytics/weather_adapter.py` | Implemented | Adjusts brightness/gamma before processing. Enable in `analytics.weather`. |
 | **Analytics: Adaptive Frame Skipper** | `analytics/adaptive_frame_skipper.py` | Implemented | Skips frames during inactivity; configure thresholds. |
 | **Analytics: Privacy Manager** | `analytics/privacy.py` | Implemented | Define `no_record_zones` and `blur_non_watchlist` to redact frames. |
-| **Analytics: Camera Health Monitor** | `analytics/camera_health.py` | Placeholder | Checks frame timestamps; requires integration with pipeline (partially wired). |
+| **Analytics: Camera Health Monitor** | `analytics/camera_health.py` | Implemented | Emits `camera_down`/`camera_recovered` rule contexts and updates Prometheus gauges when feeds stall. |
 | **Analytics: Model Switcher** | `analytics/model_switcher.py` | Placeholder | Infrastructure exists; no dynamic switching logic yet. |
 | **Analytics: IoT Integration** | `analytics/iot_integration.py` | Implemented stub | Writes to console; extend to control relays/alarms. |
 | **Analytics: Event Stats** | `analytics/event_stats.py` | Utility function | Example to tally events; not wired into pipeline output. |
@@ -132,6 +132,27 @@ This guide walks you through every major feature in the project, the current imp
     metrics_port: 9095
   ```
 
+- **Tracker appearance embeddings**
+  ```yaml
+  tracking:
+    appearance:
+      mode: "reid"          # or "color" for histogram fallback
+      model_path: "models/reid_resnet18.pth"
+      device: "cpu"
+      embedding_dim: 512
+  ```
+  Use `mode: "reid"` to enable deep embeddings; leave `model_path` null to rely on ImageNet weights or point it to fine-tuned weights per environment.
+
+- **Camera health monitoring**
+  ```yaml
+  analytics:
+    camera_health:
+      enable: true
+      timeout: 15.0
+      camera_id: "cam0"
+  ```
+  When enabled, the pipeline emits `camera_down`/`camera_recovered` contexts via the rule engine and updates Prometheus gauge `aivision_camera_health_status`.
+
 - **Analytics toggles**  
   Each feature has an `enable` flag plus parameters (zones, thresholds, etc.). Turn features on gradually to measure performance impact.
 
@@ -158,10 +179,36 @@ This guide walks you through every major feature in the project, the current imp
    - **Sidebar Watchlist**: see and add new plates (writes back to config and audit log).
    - **Events Table**: reads `logs/events.jsonl`.
    - **Stats / Frames**: extend dashboard to pull latest frame images saved by pipeline threads.
+3. To calibrate zones and stop-lines visually, run the dedicated canvas:
+   ```powershell
+   streamlit run tools/calibration_app.py
+   ```
+   Draw rectangles/lines over a sample frame, then click “Apply to config” to update the YAML automatically.
 
 ---
 
-## 6. Extending & Customizing
+## 6. Testing Workflow
+
+- Run the full unit suite after code changes:
+  ```powershell
+  python -m pytest
+  ```
+- Smoke-test single camera processing:
+  ```powershell
+  .\.venv\Scripts\python.exe run_pipeline.py --config configs/default.yaml --no-display --max-frames 200
+  ```
+- For multi-camera setups:
+  ```powershell
+  .\.venv\Scripts\python.exe run_multi_pipeline.py --config configs/default.yaml --no-display
+  ```
+- Metrics can be inspected via Prometheus once `monitoring.enable_metrics` is true (default port `9095`).
+- Focused suites:
+  - `python -m pytest tests/test_tracker.py`
+  - `python -m pytest tests/test_camera_health.py`
+
+---
+
+## 7. Extending & Customizing
 
 - **Swap detection models**: Drop your weights into `models/` and update paths in config.
 - **Add new rules**: Implement custom function, register via `rule_engine.register_handler`, and reference the handler name in YAML.
@@ -171,7 +218,7 @@ This guide walks you through every major feature in the project, the current imp
 
 ---
 
-## 7. Known Placeholders / TODOs
+## 8. Known Placeholders / TODOs
 
 - `tracking/deep_sort.py`: colour histogram appearance only; swap for learned re-ID embeddings.
 - `recognition/reid.py`: scaffolded, not plugged in.
@@ -182,7 +229,7 @@ This guide walks you through every major feature in the project, the current imp
 
 ---
 
-## 8. Quick Trouble-Shooting
+## 9. Quick Trouble-Shooting
 
 - **Relative import errors**: Always activate venv and run modules from project root. Use `python run_pipeline.py ...` (absolute imports) or rename package and run via `python -m`.
 - **`cv2.imshow` crashes**: Install full `opencv-python` or run with `--no-display`.

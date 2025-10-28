@@ -13,9 +13,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Iterable, List, Optional, Sequence, Tuple
 
-import cv2
 import numpy as np
 from scipy.optimize import linear_sum_assignment
+
+from .appearance import ColorHistogramExtractor, FeatureExtractor
 
 
 def _tlbr_to_xyah(bbox: Tuple[int, int, int, int]) -> np.ndarray:
@@ -141,6 +142,7 @@ class DeepSortTracker:
         n_init: int = 3,
         iou_threshold: float = 0.3,
         appearance_weight: float = 0.1,
+        feature_extractor: Optional[FeatureExtractor] = None,
     ) -> None:
         self.max_age = max_age
         self.n_init = n_init
@@ -150,6 +152,7 @@ class DeepSortTracker:
         self._kf = _KalmanFilter()
         self._tracks: List[_Track] = []
         self._next_track_id = 1
+        self._extractor = feature_extractor or ColorHistogramExtractor()
 
     # ------------------------------------------------------------------
     def reset(self) -> None:
@@ -181,9 +184,15 @@ class DeepSortTracker:
             track.time_since_update += 1
 
         # Step 2: compute appearance features if frame available.
-        features: List[Optional[np.ndarray]] = [
-            self._extract_feature(frame, det[:4]) for det in detections
-        ]
+        features: List[Optional[np.ndarray]] = []
+        for det in detections:
+            feature = None
+            if frame is not None and self._extractor is not None:
+                try:
+                    feature = self._extractor(frame, det[:4])
+                except Exception:
+                    feature = None
+            features.append(feature)
 
         # Step 3: data association.
         matches, unmatched_tracks, unmatched_detections = self._associate(
@@ -271,25 +280,3 @@ class DeepSortTracker:
             unmatched_detections.discard(d_idx)
 
         return matches, sorted(unmatched_tracks), sorted(unmatched_detections)
-
-    # ------------------------------------------------------------------
-    @staticmethod
-    def _extract_feature(
-        frame: Optional[np.ndarray],
-        bbox: Tuple[int, int, int, int],
-    ) -> Optional[np.ndarray]:
-        if frame is None:
-            return None
-        x1, y1, x2, y2 = bbox
-        h, w = frame.shape[:2]
-        x1 = max(0, min(x1, w - 1))
-        y1 = max(0, min(y1, h - 1))
-        x2 = max(0, min(x2, w - 1))
-        y2 = max(0, min(y2, h - 1))
-        if x2 <= x1 or y2 <= y1:
-            return None
-        patch = frame[y1:y2, x1:x2]
-        hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
-        hist = cv2.calcHist([hsv], [0, 1, 2], None, [8, 8, 8], [0, 180, 0, 256, 0, 256])
-        hist = cv2.normalize(hist, hist).flatten()
-        return hist
