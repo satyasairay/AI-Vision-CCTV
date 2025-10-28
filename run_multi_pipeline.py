@@ -26,26 +26,48 @@ from typing import Dict, Any, List
 
 import cv2
 
-from .camera_adapters import RTSPCamera, LocalFileCamera
-from .detection import VehicleDetector, PersonDetector
-from .tracking import DeepSortTracker
-from .recognition import ANPR, EyeRecognition
-from .rules import RuleEngine
-from .storage import EventLogger
-from .analytics.speed_estimator import SpeedEstimator
-from .analytics.dwell_time import DwellTimeMonitor
-from .analytics.wrong_way import WrongWayDetector
-from .analytics.duplicate_plate import DuplicatePlateDetector
-from .analytics.crowd_density import CrowdDensityMonitor
-from .analytics.stop_line_violation import StopLineViolationDetector
-from .analytics.fight_detection import ViolenceDetector
-from .analytics.weather_adapter import WeatherAdapter
-from .analytics.adaptive_frame_skipper import AdaptiveFrameSkipper
-from .analytics.privacy import PrivacyManager
-from .analytics.camera_health import CameraHealthMonitor
-from .analytics.iot_integration import IoTController
-from .storage.database_logger import DatabaseEventLogger
-from .storage.audit_logger import AuditLogger
+try:
+    from .camera_adapters import RTSPCamera, LocalFileCamera
+    from .detection import VehicleDetector, PersonDetector
+    from .tracking import DeepSortTracker
+    from .recognition import ANPR, EyeRecognition
+    from .rules import RuleEngine
+    from .storage import EventLogger
+    from .analytics.speed_estimator import SpeedEstimator
+    from .analytics.dwell_time import DwellTimeMonitor
+    from .analytics.wrong_way import WrongWayDetector
+    from .analytics.duplicate_plate import DuplicatePlateDetector
+    from .analytics.crowd_density import CrowdDensityMonitor
+    from .analytics.stop_line_violation import StopLineViolationDetector
+    from .analytics.fight_detection import ViolenceDetector
+    from .analytics.weather_adapter import WeatherAdapter
+    from .analytics.adaptive_frame_skipper import AdaptiveFrameSkipper
+    from .analytics.privacy import PrivacyManager
+    from .analytics.camera_health import CameraHealthMonitor
+    from .analytics.iot_integration import IoTController
+    from .storage.database_logger import DatabaseEventLogger
+    from .storage.audit_logger import AuditLogger
+except ImportError:
+    from camera_adapters import RTSPCamera, LocalFileCamera
+    from detection import VehicleDetector, PersonDetector
+    from tracking import DeepSortTracker
+    from recognition import ANPR, EyeRecognition
+    from rules import RuleEngine
+    from storage import EventLogger
+    from analytics.speed_estimator import SpeedEstimator
+    from analytics.dwell_time import DwellTimeMonitor
+    from analytics.wrong_way import WrongWayDetector
+    from analytics.duplicate_plate import DuplicatePlateDetector
+    from analytics.crowd_density import CrowdDensityMonitor
+    from analytics.stop_line_violation import StopLineViolationDetector
+    from analytics.fight_detection import ViolenceDetector
+    from analytics.weather_adapter import WeatherAdapter
+    from analytics.adaptive_frame_skipper import AdaptiveFrameSkipper
+    from analytics.privacy import PrivacyManager
+    from analytics.camera_health import CameraHealthMonitor
+    from analytics.iot_integration import IoTController
+    from storage.database_logger import DatabaseEventLogger
+    from storage.audit_logger import AuditLogger
 
 
 def load_config(config_path: str) -> dict:
@@ -62,7 +84,15 @@ def create_camera(source: str):
 class CameraPipeline(threading.Thread):
     """Threaded pipeline processing for a single camera."""
 
-    def __init__(self, cam_id: str, camera_cfg: Dict[str, Any], global_cfg: dict, logger: EventLogger, rules_cfg: List[Dict[str, Any]]) -> None:
+    def __init__(
+        self,
+        cam_id: str,
+        camera_cfg: Dict[str, Any],
+        global_cfg: dict,
+        logger: EventLogger,
+        rules_cfg: List[Dict[str, Any]],
+        display_enabled: bool = True,
+    ) -> None:
         super().__init__(daemon=True)
         self.cam_id = cam_id
         self.camera_cfg = camera_cfg
@@ -70,6 +100,7 @@ class CameraPipeline(threading.Thread):
         self.logger = logger
         self.rules_cfg = rules_cfg
         self.stop_event = threading.Event()
+        self.display_enabled = display_enabled
 
         # Analytics configuration per camera
         analytics_cfg = global_cfg.get("analytics", {})
@@ -406,7 +437,7 @@ class CameraPipeline(threading.Thread):
                 cv2.imwrite(str(latest_frame_path), frame)
             except Exception:
                 pass
-            if cv2.waitKey(1) & 0xFF == ord('q'):
+            if self.display_enabled and cv2.waitKey(1) & 0xFF == ord('q'):
                 break
 
         camera.release()
@@ -415,10 +446,16 @@ class CameraPipeline(threading.Thread):
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run multi-camera road security pipeline.")
     parser.add_argument("--config", type=str, required=True, help="Path to configuration file")
+    parser.add_argument(
+        "--no-display",
+        action="store_true",
+        help="Disable OpenCV UI windows (useful on headless environments).",
+    )
     args = parser.parse_args()
 
     config = load_config(args.config)
     global_cfg = config
+    display_enabled = not args.no_display
     # Determine camera configurations: either a single camera or a list of cameras
     cam_list: List[Dict[str, Any]] = []
     if "cameras" in config:
@@ -445,7 +482,7 @@ def main() -> None:
     threads: List[CameraPipeline] = []
     for idx, cam_cfg in enumerate(cam_list):
         cam_id = cam_cfg.get("id", f"cam{idx}")
-        thread = CameraPipeline(cam_id, cam_cfg, global_cfg, logger, rules_cfg)
+        thread = CameraPipeline(cam_id, cam_cfg, global_cfg, logger, rules_cfg, display_enabled=display_enabled)
         thread.start()
         threads.append(thread)
 

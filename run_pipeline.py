@@ -20,28 +20,52 @@ from pathlib import Path
 
 import cv2
 
-from .camera_adapters import RTSPCamera, LocalFileCamera
-from .detection import VehicleDetector, PersonDetector
-from .tracking import DeepSortTracker
-from .recognition import ANPR, EyeRecognition
-from .rules import RuleEngine
-from .storage import EventLogger
-from .analytics.speed_estimator import SpeedEstimator
-from .analytics.dwell_time import DwellTimeMonitor
-from .analytics.wrong_way import WrongWayDetector
-from .analytics.duplicate_plate import DuplicatePlateDetector
-from .analytics.crowd_density import CrowdDensityMonitor
-from .analytics.stop_line_violation import StopLineViolationDetector
-from .analytics.fight_detection import ViolenceDetector
-from .analytics.weather_adapter import WeatherAdapter
-from .analytics.adaptive_frame_skipper import AdaptiveFrameSkipper
-from .analytics.privacy import PrivacyManager
-from .analytics.camera_health import CameraHealthMonitor
-from .analytics.event_stats import event_counts_by_type  # example usage
-from .analytics.model_switcher import ModelSwitcher
-from .analytics.iot_integration import IoTController
-from .storage.database_logger import DatabaseEventLogger
-from .storage.audit_logger import AuditLogger
+try:
+    from .camera_adapters import RTSPCamera, LocalFileCamera
+    from .detection import VehicleDetector, PersonDetector
+    from .tracking import DeepSortTracker
+    from .recognition import ANPR, EyeRecognition
+    from .rules import RuleEngine
+    from .storage import EventLogger
+    from .analytics.speed_estimator import SpeedEstimator
+    from .analytics.dwell_time import DwellTimeMonitor
+    from .analytics.wrong_way import WrongWayDetector
+    from .analytics.duplicate_plate import DuplicatePlateDetector
+    from .analytics.crowd_density import CrowdDensityMonitor
+    from .analytics.stop_line_violation import StopLineViolationDetector
+    from .analytics.fight_detection import ViolenceDetector
+    from .analytics.weather_adapter import WeatherAdapter
+    from .analytics.adaptive_frame_skipper import AdaptiveFrameSkipper
+    from .analytics.privacy import PrivacyManager
+    from .analytics.camera_health import CameraHealthMonitor
+    from .analytics.event_stats import event_counts_by_type  # example usage
+    from .analytics.model_switcher import ModelSwitcher
+    from .analytics.iot_integration import IoTController
+    from .storage.database_logger import DatabaseEventLogger
+    from .storage.audit_logger import AuditLogger
+except ImportError:
+    from camera_adapters import RTSPCamera, LocalFileCamera
+    from detection import VehicleDetector, PersonDetector
+    from tracking import DeepSortTracker
+    from recognition import ANPR, EyeRecognition
+    from rules import RuleEngine
+    from storage import EventLogger
+    from analytics.speed_estimator import SpeedEstimator
+    from analytics.dwell_time import DwellTimeMonitor
+    from analytics.wrong_way import WrongWayDetector
+    from analytics.duplicate_plate import DuplicatePlateDetector
+    from analytics.crowd_density import CrowdDensityMonitor
+    from analytics.stop_line_violation import StopLineViolationDetector
+    from analytics.fight_detection import ViolenceDetector
+    from analytics.weather_adapter import WeatherAdapter
+    from analytics.adaptive_frame_skipper import AdaptiveFrameSkipper
+    from analytics.privacy import PrivacyManager
+    from analytics.camera_health import CameraHealthMonitor
+    from analytics.event_stats import event_counts_by_type  # example usage
+    from analytics.model_switcher import ModelSwitcher
+    from analytics.iot_integration import IoTController
+    from storage.database_logger import DatabaseEventLogger
+    from storage.audit_logger import AuditLogger
 
 
 def load_config(config_path: str) -> dict:
@@ -59,9 +83,22 @@ def create_camera(config: dict):
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the road security pipeline.")
     parser.add_argument("--config", type=str, required=True, help="Path to configuration file.")
+    parser.add_argument(
+        "--no-display",
+        action="store_true",
+        help="Disable OpenCV UI windows (useful on headless environments).",
+    )
+    parser.add_argument(
+        "--max-frames",
+        type=int,
+        default=None,
+        help="Optional cap on processed frames before exiting.",
+    )
     args = parser.parse_args()
 
     config = load_config(args.config)
+    display_enabled = not args.no_display
+    max_frames = args.max_frames
 
     # Initialize components from configuration
     camera = create_camera(config)
@@ -460,13 +497,18 @@ def main() -> None:
                 has_activity = bool(vehicle_detections) or bool(person_detections)
                 skipper.update(frame_index, has_activity)
 
-            # Optional: display frame for visual confirmation (press q to quit)
-            cv2.imshow("Frame", frame)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
+            if max_frames is not None and frame_index >= max_frames:
                 break
+
+            # Optional: display frame for visual confirmation (press q to quit)
+            if display_enabled:
+                cv2.imshow("Frame", frame)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
     finally:
         camera.release()
-        cv2.destroyAllWindows()
+        if display_enabled:
+            cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
