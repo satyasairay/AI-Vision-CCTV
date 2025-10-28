@@ -1,5 +1,3 @@
-[# Road Security Platform
-
 ## Overview
 
 This project implements a **modular road‑security platform** designed to run entirely on local infrastructure. It integrates CCTV video streams for the following tasks:
