@@ -177,6 +177,7 @@ Quick smoke tests:
 Key targeted suites:
 - `python -m pytest tests/test_tracker.py`
 - `python -m pytest tests/test_camera_health.py`
+- `python -m pytest analytics/test_fight_detection.py`
 
 Enable Prometheus metrics (`monitoring.enable_metrics: true`) to scrape processing latency, detection counts, and active tracks.
 
@@ -223,3 +224,4 @@ python -m road_security.scripts.enroll_identity --config configs/default.yaml \
 ```
 
 This computes a normalized feature vector from the image and adds it to the `eye_database` in your configuration. After enrolling, restart the pipeline to load the updated database, then add the identity name to the person watchlist via the dashboard to trigger alerts when recognized.
+

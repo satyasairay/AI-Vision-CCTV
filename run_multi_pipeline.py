@@ -183,6 +183,7 @@ class CameraPipeline(threading.Thread):
                 stride=stride,
                 device=detector_device,
                 violent_keywords=keywords,
+                weights_path=vio_cfg.get("weights_path"),
             )
 
         # Weather adaptation

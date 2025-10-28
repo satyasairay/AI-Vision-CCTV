@@ -10,7 +10,9 @@ weights when available.
 from __future__ import annotations
 
 from collections import deque
+from pathlib import Path
 from typing import Deque, Dict, Iterable, Optional, Sequence, Tuple
+import warnings
 
 import cv2
 import numpy as np
@@ -59,17 +61,31 @@ class ViolenceDetector:
         device: Optional[str] = None,
         violent_keywords: Optional[Iterable[str]] = None,
         stride: int = 2,
+        weights_path: Optional[str] = None,
     ) -> None:
         self.window = window
         self.threshold = threshold
         self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
         self.stride = max(1, stride)
 
-        weights = R3D_18_Weights.KINETICS400_V1
-        self.model = r3d_18(weights=weights).to(self.device)
+        weights_enum = R3D_18_Weights.KINETICS400_V1
+        self.model = r3d_18(weights=weights_enum).to(self.device)
+        if weights_path:
+            try:
+                state = torch.load(weights_path, map_location=self.device)
+                missing, unexpected = self.model.load_state_dict(state, strict=False)
+                if missing or unexpected:
+                    warnings.warn(
+                        f"Violence model loaded with missing={missing}, unexpected={unexpected}",
+                        stacklevel=2,
+                    )
+            except FileNotFoundError:
+                warnings.warn(f"Custom violence weights not found at {weights_path}; using default Kinetics model.", stacklevel=2)
+            except Exception as exc:
+                warnings.warn(f"Failed to load custom violence weights ({exc}); using default.", stacklevel=2)
         self.model.eval()
 
-        meta = weights.meta or {}
+        meta = weights_enum.meta or {}
         mean = meta.get("mean", (0.43216, 0.394666, 0.37645))
         std = meta.get("std", (0.22803, 0.22145, 0.216989))
         self.mean = torch.tensor(mean, device=self.device, dtype=torch.float32).view(3, 1, 1)

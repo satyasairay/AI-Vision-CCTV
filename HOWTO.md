@@ -81,7 +81,7 @@ This guide walks you through every major feature in the project, the current imp
 | **Analytics: Duplicate Plate** | `analytics/duplicate_plate.py` | Implemented | Requires plate recognition; set `analytics.duplicate_plate.enable`. |
 | **Analytics: Crowd Density** | `analytics/crowd_density.py` | Implemented | Enable plus zone & person threshold. |
 | **Analytics: Stop-Line Violation** | `analytics/stop_line_violation.py` | Implemented | Define stop line coordinates and `red_light` in config. |
-| **Analytics: Violence Detection** | `analytics/fight_detection.py` | Model-based (R3D-18) | Pretrained 3D CNN on Kinetics; tune `analytics.violence` window/threshold/device in config. |
+| **Analytics: Violence Detection** | `analytics/fight_detection.py` | Model-based (R3D-18) | Pretrained 3D CNN on Kinetics; optionally point `analytics.violence.weights_path` at custom weights and tune window/threshold/device. |
 | **Analytics: Weather Adapter** | `analytics/weather_adapter.py` | Implemented | Adjusts brightness/gamma before processing. Enable in `analytics.weather`. |
 | **Analytics: Adaptive Frame Skipper** | `analytics/adaptive_frame_skipper.py` | Implemented | Skips frames during inactivity; configure thresholds. |
 | **Analytics: Privacy Manager** | `analytics/privacy.py` | Implemented | Define `no_record_zones` and `blur_non_watchlist` to redact frames. |

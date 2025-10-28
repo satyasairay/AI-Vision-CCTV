@@ -368,6 +368,7 @@ def main() -> None:
             stride=stride_v,
             device=violence_device,
             violent_keywords=keywords,
+            weights_path=violence_cfg.get("weights_path"),
         )
 
         def violence_handler(context: dict) -> bool:

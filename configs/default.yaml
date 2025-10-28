@@ -119,6 +119,7 @@ analytics:
     stride: 2  # process every Nth frame for efficiency
     device: "cpu"
     keywords: ["fight", "punch", "kick", "boxing", "wrestling"]
+    weights_path: null  # optional path to custom R3D weights
   # Weather adaptation settings
   weather:
     enable: false
